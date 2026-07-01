@@ -1293,17 +1293,17 @@ namespace
             ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
             ImGui::DockBuilderSetNodeSize(dockspaceId, dockspaceSize);
 
-            ImGuiID topDockId = 0;
-            ImGuiID bottomDockId = 0;
-            ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Up, 0.45f, &topDockId, &bottomDockId);
+            ImGuiID leftDockId = 0;
+            ImGuiID rightDockId = 0;
+            ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, 0.50f, &leftDockId, &rightDockId);
 
             ImGuiID deltaDockId = 0;
             ImGuiID heatmapDockId = 0;
-            ImGui::DockBuilderSplitNode(topDockId, ImGuiDir_Left, 0.50f, &deltaDockId, &heatmapDockId);
+            ImGui::DockBuilderSplitNode(leftDockId, ImGuiDir_Up, 0.50f, &deltaDockId, &heatmapDockId);
 
             ImGuiID inputsDockId = 0;
             ImGuiID detailsDockId = 0;
-            ImGui::DockBuilderSplitNode(bottomDockId, ImGuiDir_Left, 0.55f, &inputsDockId, &detailsDockId);
+            ImGui::DockBuilderSplitNode(rightDockId, ImGuiDir_Up, 0.50f, &inputsDockId, &detailsDockId);
 
             ImGui::DockBuilderDockWindow("Mouse / Delta Graph", deltaDockId);
             ImGui::DockBuilderDockWindow("Mouse / Cursor Heatmap", heatmapDockId);
