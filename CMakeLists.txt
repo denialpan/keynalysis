@@ -5,19 +5,19 @@ project(keynalysis LANGUAGES CXX)
 include(FetchContent)
 
 FetchContent_Declare(
-    imgui
-    URL https://github.com/ocornut/imgui/archive/refs/tags/v1.90.9.zip
+    imgui_docking
+    URL https://github.com/ocornut/imgui/archive/refs/heads/docking.zip
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
-FetchContent_MakeAvailable(imgui)
+FetchContent_MakeAvailable(imgui_docking)
 
 set(IMGUI_SOURCES
-    ${imgui_SOURCE_DIR}/imgui.cpp
-    ${imgui_SOURCE_DIR}/imgui_draw.cpp
-    ${imgui_SOURCE_DIR}/imgui_tables.cpp
-    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+    ${imgui_docking_SOURCE_DIR}/imgui.cpp
+    ${imgui_docking_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_docking_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_docking_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_docking_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
+    ${imgui_docking_SOURCE_DIR}/backends/imgui_impl_win32.cpp
 )
 
 add_executable(keynalysis WIN32
@@ -33,8 +33,8 @@ target_compile_definitions(keynalysis PRIVATE
     _UNICODE
 )
 target_include_directories(keynalysis PRIVATE
-    ${imgui_SOURCE_DIR}
-    ${imgui_SOURCE_DIR}/backends
+    ${imgui_docking_SOURCE_DIR}
+    ${imgui_docking_SOURCE_DIR}/backends
 )
 target_link_libraries(keynalysis PRIVATE
     d3d11

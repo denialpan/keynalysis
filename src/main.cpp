@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 
@@ -85,6 +86,7 @@ namespace
     std::string g_selectedProgramName;
     DWORD g_selectedProgramPid = 0;
     int g_selectedMonitorIndex = 0;
+    bool g_rebuildHomeDockLayout = true;
     std::array<bool, 256> g_keysDown{};
     std::deque<MouseDeltaSample> g_mouseDeltaSamples;
     POINT g_mouseDelta{};
@@ -766,6 +768,42 @@ namespace
         ImGui::Text("Clicks: left %d, right %d, middle %d", g_leftClicks, g_rightClicks, g_middleClicks);
     }
 
+    void DrawVerticalSplitter(const char* id, float& leftWidth, float totalWidth, float minLeft, float minRight)
+    {
+        const float thickness = 6.0f;
+        ImGui::SameLine();
+        ImGui::InvisibleButton(id, ImVec2(thickness, -1.0f));
+        if (ImGui::IsItemActive())
+            leftWidth += ImGui::GetIO().MouseDelta.x;
+
+        leftWidth = std::clamp(leftWidth, minLeft, std::max(minLeft, totalWidth - minRight - thickness));
+
+        const ImVec2 min = ImGui::GetItemRectMin();
+        const ImVec2 max = ImGui::GetItemRectMax();
+        ImU32 color = ImGui::IsItemHovered() || ImGui::IsItemActive()
+            ? IM_COL32(110, 125, 145, 255)
+            : IM_COL32(62, 68, 76, 255);
+        ImGui::GetWindowDrawList()->AddRectFilled(min, max, color);
+        ImGui::SameLine();
+    }
+
+    void DrawHorizontalSplitter(const char* id, float& topHeight, float totalHeight, float minTop, float minBottom)
+    {
+        const float thickness = 6.0f;
+        ImGui::InvisibleButton(id, ImVec2(-1.0f, thickness));
+        if (ImGui::IsItemActive())
+            topHeight += ImGui::GetIO().MouseDelta.y;
+
+        topHeight = std::clamp(topHeight, minTop, std::max(minTop, totalHeight - minBottom - thickness));
+
+        const ImVec2 min = ImGui::GetItemRectMin();
+        const ImVec2 max = ImGui::GetItemRectMax();
+        ImU32 color = ImGui::IsItemHovered() || ImGui::IsItemActive()
+            ? IM_COL32(110, 125, 145, 255)
+            : IM_COL32(62, 68, 76, 255);
+        ImGui::GetWindowDrawList()->AddRectFilled(min, max, color);
+    }
+
     void DrawInputSummaryTable(const char* tableId, const char* deviceFilter, float height)
     {
         constexpr ImGuiTableFlags tableFlags =
@@ -1034,27 +1072,64 @@ namespace
 
     void DrawHomeTab()
     {
-        const ImVec2 available = ImGui::GetContentRegionAvail();
-        const float spacing = ImGui::GetStyle().ItemSpacing.x;
-        const float leftWidth = std::max(300.0f, available.x * 0.42f);
-        const float rightWidth = std::max(260.0f, available.x - leftWidth - spacing);
+        if (ImGui::Button("Reset Home docking"))
+            g_rebuildHomeDockLayout = true;
 
-        ImGui::BeginChild("home-history-pane", ImVec2(leftWidth, 0), true);
-        ImGui::TextUnformatted("History");
-        DrawRecentHistoryTable(ImGui::GetContentRegionAvail().y);
-        ImGui::EndChild();
+        const ImGuiID dockspaceId = ImGui::GetID("home-dockspace");
+        const ImVec2 dockspaceSize = ImGui::GetContentRegionAvail();
 
-        ImGui::SameLine();
+        if (g_rebuildHomeDockLayout)
+        {
+            g_rebuildHomeDockLayout = false;
 
-        ImGui::BeginChild("home-detail-pane", ImVec2(rightWidth, 0), true);
-        DrawOverviewStats();
-        ImGui::Spacing();
+            ImGui::DockBuilderRemoveNode(dockspaceId);
+            ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
+            ImGui::DockBuilderSetNodeSize(dockspaceId, dockspaceSize);
 
-        const float rightHeight = ImGui::GetContentRegionAvail().y;
-        DrawInputSummaryTable("home-input-summary", nullptr, std::max(130.0f, rightHeight * 0.42f));
-        ImGui::Spacing();
-        DrawSelectedInputDetails(ImGui::GetContentRegionAvail().y);
-        ImGui::EndChild();
+            ImGuiID historyDockId = 0;
+            ImGuiID rightDockId = 0;
+            ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, 0.42f, &historyDockId, &rightDockId);
+
+            ImGuiID totalsDockId = 0;
+            ImGuiID lowerRightDockId = 0;
+            ImGui::DockBuilderSplitNode(rightDockId, ImGuiDir_Up, 0.22f, &totalsDockId, &lowerRightDockId);
+
+            ImGuiID detailsDockId = 0;
+            ImGuiID inputTotalsDockId = 0;
+            ImGui::DockBuilderSplitNode(lowerRightDockId, ImGuiDir_Down, 0.45f, &detailsDockId, &inputTotalsDockId);
+
+            ImGui::DockBuilderDockWindow("Home / History", historyDockId);
+            ImGui::DockBuilderDockWindow("Home / Totals", totalsDockId);
+            ImGui::DockBuilderDockWindow("Home / Input Totals", inputTotalsDockId);
+            ImGui::DockBuilderDockWindow("Home / Details", detailsDockId);
+            ImGui::DockBuilderFinish(dockspaceId);
+        }
+
+        ImGui::DockSpace(dockspaceId, dockspaceSize, ImGuiDockNodeFlags_None);
+
+        if (ImGui::Begin("Home / History"))
+        {
+            DrawRecentHistoryTable(ImGui::GetContentRegionAvail().y);
+        }
+        ImGui::End();
+
+        if (ImGui::Begin("Home / Totals"))
+        {
+            DrawOverviewStats();
+        }
+        ImGui::End();
+
+        if (ImGui::Begin("Home / Input Totals"))
+        {
+            DrawInputSummaryTable("home-input-summary", nullptr, ImGui::GetContentRegionAvail().y);
+        }
+        ImGui::End();
+
+        if (ImGui::Begin("Home / Details"))
+        {
+            DrawSelectedInputDetails(ImGui::GetContentRegionAvail().y);
+        }
+        ImGui::End();
     }
 
     void DrawKeyboardTab()
@@ -1420,6 +1495,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
     ImGui::StyleColorsDark();
     ImGui_ImplWin32_Init(hwnd);
