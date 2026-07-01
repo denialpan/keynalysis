@@ -573,15 +573,20 @@ namespace
     void DrawMouseDeltaGraph(const ImVec2& size)
     {
         ImGui::TextUnformatted("Mouse Delta");
+        const ImVec2 available = ImGui::GetContentRegionAvail();
+        const ImVec2 canvasSize(
+            std::max(1.0f, std::min(size.x, available.x)),
+            std::max(1.0f, std::min(size.y, available.y)));
+
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         const ImVec2 origin = ImGui::GetCursorScreenPos();
-        ImGui::InvisibleButton("mouse-delta-graph", size);
-        const ImVec2 end(origin.x + size.x, origin.y + size.y);
+        ImGui::InvisibleButton("mouse-delta-graph", canvasSize);
+        const ImVec2 end(origin.x + canvasSize.x, origin.y + canvasSize.y);
 
         drawList->AddRectFilled(origin, end, IM_COL32(20, 23, 28, 255));
         drawList->AddRect(origin, end, IM_COL32(80, 88, 98, 255));
 
-        const float midY = origin.y + size.y * 0.5f;
+        const float midY = origin.y + canvasSize.y * 0.5f;
         drawList->AddLine(ImVec2(origin.x, midY), ImVec2(end.x, midY), IM_COL32(70, 76, 84, 255));
 
         if (g_mouseDeltaSamples.size() < 2)
@@ -599,8 +604,8 @@ namespace
 
         auto pointForSample = [&](size_t index, float value) {
             const float t = static_cast<float>(index) / static_cast<float>(g_mouseDeltaSamples.size() - 1);
-            const float x = origin.x + t * size.x;
-            const float y = midY - (value / maxAbs) * (size.y * 0.45f);
+            const float x = origin.x + t * canvasSize.x;
+            const float y = midY - (value / maxAbs) * (canvasSize.y * 0.45f);
             return ImVec2(x, y);
         };
 
@@ -644,10 +649,15 @@ namespace
                 RefreshMonitors();
         }
 
+        const ImVec2 available = ImGui::GetContentRegionAvail();
+        const ImVec2 canvasSize(
+            std::max(1.0f, std::min(size.x, available.x)),
+            std::max(1.0f, std::min(size.y, available.y)));
+
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         const ImVec2 origin = ImGui::GetCursorScreenPos();
-        ImGui::InvisibleButton("cursor-heatmap", size);
-        const ImVec2 end(origin.x + size.x, origin.y + size.y);
+        ImGui::InvisibleButton("cursor-heatmap", canvasSize);
+        const ImVec2 end(origin.x + canvasSize.x, origin.y + canvasSize.y);
 
         drawList->AddRectFilled(origin, end, IM_COL32(20, 23, 28, 255));
         drawList->AddRect(origin, end, IM_COL32(80, 88, 98, 255));
@@ -660,8 +670,8 @@ namespace
 
         g_selectedMonitorIndex = std::clamp(g_selectedMonitorIndex, 0, static_cast<int>(g_monitors.size()) - 1);
         const MonitorHeatmap& heatmap = g_monitors[g_selectedMonitorIndex];
-        const float cellW = size.x / static_cast<float>(HEATMAP_COLUMNS);
-        const float cellH = size.y / static_cast<float>(HEATMAP_ROWS);
+        const float cellW = canvasSize.x / static_cast<float>(HEATMAP_COLUMNS);
+        const float cellH = canvasSize.y / static_cast<float>(HEATMAP_ROWS);
 
         for (int y = 0; y < HEATMAP_ROWS; ++y)
         {
@@ -1312,17 +1322,13 @@ namespace
             ImGui::Text("Tracked mouse inputs: %d", TrackedInputs("Mouse"));
             ImGui::Spacing();
 
-            const float graphWidth = ImGui::GetContentRegionAvail().x;
-            const float graphHeight = std::max(160.0f, ImGui::GetContentRegionAvail().y);
-            DrawMouseDeltaGraph(ImVec2(graphWidth, graphHeight));
+            DrawMouseDeltaGraph(ImGui::GetContentRegionAvail());
         }
         ImGui::End();
 
         if (ImGui::Begin("Mouse / Cursor Heatmap"))
         {
-            const float heatmapWidth = ImGui::GetContentRegionAvail().x;
-            const float heatmapHeight = std::max(160.0f, ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing());
-            DrawCursorHeatmap(ImVec2(heatmapWidth, heatmapHeight));
+            DrawCursorHeatmap(ImGui::GetContentRegionAvail());
         }
         ImGui::End();
 
