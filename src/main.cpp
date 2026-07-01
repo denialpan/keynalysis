@@ -1283,15 +1283,20 @@ namespace
             ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
             ImGui::DockBuilderSetNodeSize(dockspaceId, dockspaceSize);
 
-            ImGuiID graphsDockId = 0;
+            ImGuiID topDockId = 0;
             ImGuiID bottomDockId = 0;
-            ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Up, 0.45f, &graphsDockId, &bottomDockId);
+            ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Up, 0.45f, &topDockId, &bottomDockId);
+
+            ImGuiID deltaDockId = 0;
+            ImGuiID heatmapDockId = 0;
+            ImGui::DockBuilderSplitNode(topDockId, ImGuiDir_Left, 0.50f, &deltaDockId, &heatmapDockId);
 
             ImGuiID inputsDockId = 0;
             ImGuiID detailsDockId = 0;
             ImGui::DockBuilderSplitNode(bottomDockId, ImGuiDir_Left, 0.55f, &inputsDockId, &detailsDockId);
 
-            ImGui::DockBuilderDockWindow("Mouse / Monitors", graphsDockId);
+            ImGui::DockBuilderDockWindow("Mouse / Delta Graph", deltaDockId);
+            ImGui::DockBuilderDockWindow("Mouse / Cursor Heatmap", heatmapDockId);
             ImGui::DockBuilderDockWindow("Mouse / Input Totals", inputsDockId);
             ImGui::DockBuilderDockWindow("Mouse / Selected Details", detailsDockId);
             ImGui::DockBuilderFinish(dockspaceId);
@@ -1299,7 +1304,7 @@ namespace
 
         ImGui::DockSpace(dockspaceId, dockspaceSize, ImGuiDockNodeFlags_None);
 
-        if (ImGui::Begin("Mouse / Monitors"))
+        if (ImGui::Begin("Mouse / Delta Graph"))
         {
             ImGui::Text("Mouse delta total: x %ld, y %ld", g_mouseDelta.x, g_mouseDelta.y);
             ImGui::Text("Wheel total: %d", g_wheelDelta);
@@ -1308,23 +1313,16 @@ namespace
             ImGui::Spacing();
 
             const float graphWidth = ImGui::GetContentRegionAvail().x;
-            const float graphHeight = std::max(160.0f, ImGui::GetContentRegionAvail().y * 0.46f);
-            if (graphWidth >= 720.0f)
-            {
-                const float panelWidth = (graphWidth - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-                ImGui::BeginGroup();
-                DrawMouseDeltaGraph(ImVec2(panelWidth, graphHeight));
-                ImGui::EndGroup();
-                ImGui::SameLine();
-                ImGui::BeginGroup();
-                DrawCursorHeatmap(ImVec2(panelWidth, graphHeight - ImGui::GetFrameHeightWithSpacing()));
-                ImGui::EndGroup();
-            }
-            else
-            {
-                DrawMouseDeltaGraph(ImVec2(graphWidth, graphHeight));
-                DrawCursorHeatmap(ImVec2(graphWidth, graphHeight));
-            }
+            const float graphHeight = std::max(160.0f, ImGui::GetContentRegionAvail().y);
+            DrawMouseDeltaGraph(ImVec2(graphWidth, graphHeight));
+        }
+        ImGui::End();
+
+        if (ImGui::Begin("Mouse / Cursor Heatmap"))
+        {
+            const float heatmapWidth = ImGui::GetContentRegionAvail().x;
+            const float heatmapHeight = std::max(160.0f, ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing());
+            DrawCursorHeatmap(ImVec2(heatmapWidth, heatmapHeight));
         }
         ImGui::End();
 
