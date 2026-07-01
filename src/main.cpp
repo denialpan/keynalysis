@@ -26,7 +26,6 @@ namespace
         double timeSeconds = 0.0;
         std::string action;
         std::string appName;
-        std::string windowTitle;
         DWORD processId = 0;
         std::string detail;
     };
@@ -34,7 +33,6 @@ namespace
     struct AppInputStats
     {
         std::string appName;
-        std::string windowTitle;
         DWORD processId = 0;
         uint64_t total = 0;
         uint64_t downTotal = 0;
@@ -52,7 +50,6 @@ namespace
         bool isDown = false;
         double lastTimeSeconds = 0.0;
         std::string lastAppName;
-        std::string lastWindowTitle;
         std::deque<InputEvent> events;
         std::vector<AppInputStats> appTotals;
     };
@@ -60,7 +57,6 @@ namespace
     struct FocusContext
     {
         std::string appName = "Unknown";
-        std::string windowTitle;
         DWORD processId = 0;
     };
 
@@ -156,10 +152,6 @@ namespace
         HWND foreground = GetForegroundWindow();
         if (!foreground)
             return context;
-
-        wchar_t title[256]{};
-        if (GetWindowTextW(foreground, title, static_cast<int>(std::size(title))) > 0)
-            context.windowTitle = WideToUtf8(title);
 
         GetWindowThreadProcessId(foreground, &context.processId);
         if (context.processId == 0)
@@ -280,7 +272,7 @@ namespace
                 return app;
         }
 
-        input.appTotals.push_back({ focus.appName, focus.windowTitle, focus.processId });
+        input.appTotals.push_back({ focus.appName, focus.processId });
         return input.appTotals.back();
     }
 
@@ -293,11 +285,9 @@ namespace
         ++input.total;
         input.lastTimeSeconds = now;
         input.lastAppName = focus.appName;
-        input.lastWindowTitle = focus.windowTitle;
 
         AppInputStats& appStats = GetAppStats(input, focus);
         ++appStats.total;
-        appStats.windowTitle = focus.windowTitle;
 
         if (action == "Down")
         {
@@ -312,7 +302,7 @@ namespace
             input.isDown = false;
         }
 
-        input.events.push_front({ now, std::move(action), focus.appName, focus.windowTitle, focus.processId, std::move(detail) });
+        input.events.push_front({ now, std::move(action), focus.appName, focus.processId, std::move(detail) });
         while (input.events.size() > 100)
             input.events.pop_back();
     }
@@ -916,13 +906,12 @@ namespace
         }
 
         const float detailHeight = std::max(100.0f, ImGui::GetContentRegionAvail().y);
-        if (ImGui::BeginTable("selected-input-details", 6, tableFlags, ImVec2(0, detailHeight)))
+        if (ImGui::BeginTable("selected-input-details", 5, tableFlags, ImVec2(0, detailHeight)))
         {
             ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_DefaultSort);
             ImGui::TableSetupColumn("Event");
             ImGui::TableSetupColumn("Program");
             ImGui::TableSetupColumn("PID");
-            ImGui::TableSetupColumn("Window");
             ImGui::TableSetupColumn("Detail");
             ImGui::TableHeadersRow();
 
@@ -940,8 +929,7 @@ namespace
                 case 1: return a->action < b->action;
                 case 2: return a->appName < b->appName;
                 case 3: return a->processId < b->processId;
-                case 4: return a->windowTitle < b->windowTitle;
-                case 5: return a->detail < b->detail;
+                case 4: return a->detail < b->detail;
                 default: return a->timeSeconds < b->timeSeconds;
                 }
             });
@@ -959,8 +947,6 @@ namespace
                 ImGui::TableSetColumnIndex(3);
                 ImGui::Text("%lu", static_cast<unsigned long>(event.processId));
                 ImGui::TableSetColumnIndex(4);
-                ImGui::TextUnformatted(event.windowTitle.c_str());
-                ImGui::TableSetColumnIndex(5);
                 ImGui::TextUnformatted(event.detail.c_str());
             }
             ImGui::EndTable();
@@ -1033,7 +1019,6 @@ namespace
         uint64_t total = 0;
         uint64_t keyboardTotal = 0;
         uint64_t mouseTotal = 0;
-        std::string lastWindowTitle;
     };
 
     void DrawProgramTab()
@@ -1060,7 +1045,6 @@ namespace
                 }
 
                 totals->total += app.total;
-                totals->lastWindowTitle = app.windowTitle;
                 if (input.device == "Keyboard")
                     totals->keyboardTotal += app.total;
                 else if (input.device == "Mouse")
@@ -1080,14 +1064,13 @@ namespace
             ImGuiTableFlags_ScrollY |
             ImGuiTableFlags_Sortable;
 
-        if (ImGui::BeginTable("program-summary", 6, tableFlags, ImVec2(0, programTableHeight)))
+        if (ImGui::BeginTable("program-summary", 5, tableFlags, ImVec2(0, programTableHeight)))
         {
             ImGui::TableSetupColumn("Program");
             ImGui::TableSetupColumn("PID");
             ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_DefaultSort);
             ImGui::TableSetupColumn("Keyboard");
             ImGui::TableSetupColumn("Mouse");
-            ImGui::TableSetupColumn("Last Window");
             ImGui::TableHeadersRow();
 
             const ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs();
@@ -1101,7 +1084,6 @@ namespace
                 case 2: return a.total < b.total;
                 case 3: return a.keyboardTotal < b.keyboardTotal;
                 case 4: return a.mouseTotal < b.mouseTotal;
-                case 5: return a.lastWindowTitle < b.lastWindowTitle;
                 default: return a.total < b.total;
                 }
             });
@@ -1125,8 +1107,6 @@ namespace
                 ImGui::Text("%llu", static_cast<unsigned long long>(program.keyboardTotal));
                 ImGui::TableSetColumnIndex(4);
                 ImGui::Text("%llu", static_cast<unsigned long long>(program.mouseTotal));
-                ImGui::TableSetColumnIndex(5);
-                ImGui::TextUnformatted(program.lastWindowTitle.c_str());
             }
 
             ImGui::EndTable();
@@ -1140,14 +1120,13 @@ namespace
         }
 
         ImGui::Text("Inputs for: %s (%lu)", g_selectedProgramName.c_str(), static_cast<unsigned long>(g_selectedProgramPid));
-        if (ImGui::BeginTable("program-inputs", 6, tableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y)))
+        if (ImGui::BeginTable("program-inputs", 5, tableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y)))
         {
             ImGui::TableSetupColumn("Device");
             ImGui::TableSetupColumn("Input");
             ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_DefaultSort);
             ImGui::TableSetupColumn("Down");
             ImGui::TableSetupColumn("Up");
-            ImGui::TableSetupColumn("Last Window");
             ImGui::TableHeadersRow();
 
             struct ProgramInputRow
@@ -1177,7 +1156,6 @@ namespace
                 case 2: return a.app->total < b.app->total;
                 case 3: return a.app->downTotal < b.app->downTotal;
                 case 4: return a.app->upTotal < b.app->upTotal;
-                case 5: return a.app->windowTitle < b.app->windowTitle;
                 default: return a.app->total < b.app->total;
                 }
             });
@@ -1198,8 +1176,6 @@ namespace
                 ImGui::Text("%llu", static_cast<unsigned long long>(row.app->downTotal));
                 ImGui::TableSetColumnIndex(4);
                 ImGui::Text("%llu", static_cast<unsigned long long>(row.app->upTotal));
-                ImGui::TableSetColumnIndex(5);
-                ImGui::TextUnformatted(row.app->windowTitle.c_str());
             }
 
             ImGui::EndTable();
