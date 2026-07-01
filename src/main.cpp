@@ -86,6 +86,8 @@ namespace
     std::vector<InputStats> g_inputs;
     std::vector<MonitorHeatmap> g_monitors;
     std::string g_selectedInputId;
+    std::string g_selectedProgramName;
+    DWORD g_selectedProgramPid = 0;
     int g_selectedMonitorIndex = 0;
     std::array<bool, 256> g_keysDown{};
     std::deque<MouseDeltaSample> g_mouseDeltaSamples;
@@ -702,6 +704,24 @@ namespace
         return deviceFilter == nullptr || input.device == deviceFilter;
     }
 
+    bool SortAscending(const ImGuiTableSortSpecs* sortSpecs)
+    {
+        return !sortSpecs || sortSpecs->SpecsCount == 0 || sortSpecs->Specs[0].SortDirection != ImGuiSortDirection_Descending;
+    }
+
+    int SortColumn(const ImGuiTableSortSpecs* sortSpecs, int fallbackColumn = 0)
+    {
+        return sortSpecs && sortSpecs->SpecsCount > 0 ? sortSpecs->Specs[0].ColumnIndex : fallbackColumn;
+    }
+
+    template <typename T, typename Compare>
+    void SortWithDirection(std::vector<T>& items, bool ascending, Compare compare)
+    {
+        std::sort(items.begin(), items.end(), [&](const T& a, const T& b) {
+            return ascending ? compare(a, b) : compare(b, a);
+        });
+    }
+
     uint64_t TotalInvocations(const char* deviceFilter = nullptr)
     {
         uint64_t total = 0;
@@ -758,11 +778,19 @@ namespace
 
     void DrawInputSummaryTable(const char* tableId, const char* deviceFilter, float height)
     {
-        if (ImGui::BeginTable(tableId, 8, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY, ImVec2(0, height)))
+        constexpr ImGuiTableFlags tableFlags =
+            ImGuiTableFlags_Borders |
+            ImGuiTableFlags_RowBg |
+            ImGuiTableFlags_Resizable |
+            ImGuiTableFlags_ScrollY |
+            ImGuiTableFlags_Sortable |
+            ImGuiTableFlags_SortMulti;
+
+        if (ImGui::BeginTable(tableId, 8, tableFlags, ImVec2(0, height)))
         {
             ImGui::TableSetupColumn("Device");
             ImGui::TableSetupColumn("Input");
-            ImGui::TableSetupColumn("Total");
+            ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_DefaultSort);
             ImGui::TableSetupColumn("Down");
             ImGui::TableSetupColumn("Up");
             ImGui::TableSetupColumn("State");
@@ -770,11 +798,34 @@ namespace
             ImGui::TableSetupColumn("Last");
             ImGui::TableHeadersRow();
 
+            std::vector<InputStats*> rows;
             for (InputStats& input : g_inputs)
             {
-                if (!MatchesDeviceFilter(input, deviceFilter))
-                    continue;
+                if (MatchesDeviceFilter(input, deviceFilter))
+                    rows.push_back(&input);
+            }
 
+            const ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs();
+            const int column = SortColumn(sortSpecs, 2);
+            const bool ascending = SortAscending(sortSpecs);
+            SortWithDirection(rows, ascending, [&](const InputStats* a, const InputStats* b) {
+                switch (column)
+                {
+                case 0: return a->device < b->device;
+                case 1: return a->label < b->label;
+                case 2: return a->total < b->total;
+                case 3: return a->downTotal < b->downTotal;
+                case 4: return a->upTotal < b->upTotal;
+                case 5: return a->isDown < b->isDown;
+                case 6: return a->lastAppName < b->lastAppName;
+                case 7: return a->lastTimeSeconds < b->lastTimeSeconds;
+                default: return a->total < b->total;
+                }
+            });
+
+            for (InputStats* row : rows)
+            {
+                InputStats& input = *row;
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
                 ImGui::TextUnformatted(input.device.c_str());
@@ -811,17 +862,44 @@ namespace
 
         ImGui::Text("Details: %s %s", selectedInput->device.c_str(), selectedInput->label.c_str());
         const float appTableHeight = std::max(90.0f, height * 0.35f);
-        if (ImGui::BeginTable("selected-app-totals", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY, ImVec2(0, appTableHeight)))
+        constexpr ImGuiTableFlags tableFlags =
+            ImGuiTableFlags_Borders |
+            ImGuiTableFlags_RowBg |
+            ImGuiTableFlags_Resizable |
+            ImGuiTableFlags_ScrollY |
+            ImGuiTableFlags_Sortable;
+
+        if (ImGui::BeginTable("selected-app-totals", 5, tableFlags, ImVec2(0, appTableHeight)))
         {
             ImGui::TableSetupColumn("Program");
             ImGui::TableSetupColumn("PID");
-            ImGui::TableSetupColumn("Total");
+            ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_DefaultSort);
             ImGui::TableSetupColumn("Down");
             ImGui::TableSetupColumn("Up");
             ImGui::TableHeadersRow();
 
+            std::vector<const AppInputStats*> rows;
             for (const AppInputStats& app : selectedInput->appTotals)
+                rows.push_back(&app);
+
+            const ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs();
+            const int column = SortColumn(sortSpecs, 2);
+            const bool ascending = SortAscending(sortSpecs);
+            SortWithDirection(rows, ascending, [&](const AppInputStats* a, const AppInputStats* b) {
+                switch (column)
+                {
+                case 0: return a->appName < b->appName;
+                case 1: return a->processId < b->processId;
+                case 2: return a->total < b->total;
+                case 3: return a->downTotal < b->downTotal;
+                case 4: return a->upTotal < b->upTotal;
+                default: return a->total < b->total;
+                }
+            });
+
+            for (const AppInputStats* row : rows)
             {
+                const AppInputStats& app = *row;
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
                 ImGui::TextUnformatted(app.appName.c_str());
@@ -838,9 +916,9 @@ namespace
         }
 
         const float detailHeight = std::max(100.0f, ImGui::GetContentRegionAvail().y);
-        if (ImGui::BeginTable("selected-input-details", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY, ImVec2(0, detailHeight)))
+        if (ImGui::BeginTable("selected-input-details", 6, tableFlags, ImVec2(0, detailHeight)))
         {
-            ImGui::TableSetupColumn("Time");
+            ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_DefaultSort);
             ImGui::TableSetupColumn("Event");
             ImGui::TableSetupColumn("Program");
             ImGui::TableSetupColumn("PID");
@@ -848,8 +926,29 @@ namespace
             ImGui::TableSetupColumn("Detail");
             ImGui::TableHeadersRow();
 
+            std::vector<const InputEvent*> rows;
             for (const InputEvent& event : selectedInput->events)
+                rows.push_back(&event);
+
+            const ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs();
+            const int detailColumn = SortColumn(sortSpecs, 0);
+            const bool detailAscending = SortAscending(sortSpecs);
+            SortWithDirection(rows, detailAscending, [&](const InputEvent* a, const InputEvent* b) {
+                switch (detailColumn)
+                {
+                case 0: return a->timeSeconds < b->timeSeconds;
+                case 1: return a->action < b->action;
+                case 2: return a->appName < b->appName;
+                case 3: return a->processId < b->processId;
+                case 4: return a->windowTitle < b->windowTitle;
+                case 5: return a->detail < b->detail;
+                default: return a->timeSeconds < b->timeSeconds;
+                }
+            });
+
+            for (const InputEvent* row : rows)
             {
+                const InputEvent& event = *row;
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
                 ImGui::Text("%.3f", event.timeSeconds);
@@ -969,28 +1068,55 @@ namespace
             }
         }
 
-        std::sort(programs.begin(), programs.end(), [](const ProgramTotals& a, const ProgramTotals& b) {
-            return a.total > b.total;
-        });
-
         ImGui::Text("Focused programs tracked: %d", static_cast<int>(programs.size()));
         ImGui::Spacing();
 
-        if (ImGui::BeginTable("program-summary", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY, ImVec2(0, ImGui::GetContentRegionAvail().y)))
+        const float availableHeight = ImGui::GetContentRegionAvail().y;
+        const float programTableHeight = std::max(150.0f, availableHeight * 0.48f);
+        constexpr ImGuiTableFlags tableFlags =
+            ImGuiTableFlags_Borders |
+            ImGuiTableFlags_RowBg |
+            ImGuiTableFlags_Resizable |
+            ImGuiTableFlags_ScrollY |
+            ImGuiTableFlags_Sortable;
+
+        if (ImGui::BeginTable("program-summary", 6, tableFlags, ImVec2(0, programTableHeight)))
         {
             ImGui::TableSetupColumn("Program");
             ImGui::TableSetupColumn("PID");
-            ImGui::TableSetupColumn("Total");
+            ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_DefaultSort);
             ImGui::TableSetupColumn("Keyboard");
             ImGui::TableSetupColumn("Mouse");
             ImGui::TableSetupColumn("Last Window");
             ImGui::TableHeadersRow();
 
+            const ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs();
+            const int column = SortColumn(sortSpecs, 2);
+            const bool ascending = SortAscending(sortSpecs);
+            SortWithDirection(programs, ascending, [&](const ProgramTotals& a, const ProgramTotals& b) {
+                switch (column)
+                {
+                case 0: return a.appName < b.appName;
+                case 1: return a.processId < b.processId;
+                case 2: return a.total < b.total;
+                case 3: return a.keyboardTotal < b.keyboardTotal;
+                case 4: return a.mouseTotal < b.mouseTotal;
+                case 5: return a.lastWindowTitle < b.lastWindowTitle;
+                default: return a.total < b.total;
+                }
+            });
+
             for (const ProgramTotals& program : programs)
             {
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
-                ImGui::TextUnformatted(program.appName.c_str());
+                const bool selected = program.processId == g_selectedProgramPid && program.appName == g_selectedProgramName;
+                const std::string selectableLabel = program.appName + "##program:" + std::to_string(program.processId);
+                if (ImGui::Selectable(selectableLabel.c_str(), selected, ImGuiSelectableFlags_SpanAllColumns))
+                {
+                    g_selectedProgramPid = program.processId;
+                    g_selectedProgramName = program.appName;
+                }
                 ImGui::TableSetColumnIndex(1);
                 ImGui::Text("%lu", static_cast<unsigned long>(program.processId));
                 ImGui::TableSetColumnIndex(2);
@@ -1001,6 +1127,79 @@ namespace
                 ImGui::Text("%llu", static_cast<unsigned long long>(program.mouseTotal));
                 ImGui::TableSetColumnIndex(5);
                 ImGui::TextUnformatted(program.lastWindowTitle.c_str());
+            }
+
+            ImGui::EndTable();
+        }
+
+        ImGui::Spacing();
+        if (g_selectedProgramPid == 0 && g_selectedProgramName.empty())
+        {
+            ImGui::TextUnformatted("Select a program row to view inputs recorded while it was focused.");
+            return;
+        }
+
+        ImGui::Text("Inputs for: %s (%lu)", g_selectedProgramName.c_str(), static_cast<unsigned long>(g_selectedProgramPid));
+        if (ImGui::BeginTable("program-inputs", 6, tableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y)))
+        {
+            ImGui::TableSetupColumn("Device");
+            ImGui::TableSetupColumn("Input");
+            ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_DefaultSort);
+            ImGui::TableSetupColumn("Down");
+            ImGui::TableSetupColumn("Up");
+            ImGui::TableSetupColumn("Last Window");
+            ImGui::TableHeadersRow();
+
+            struct ProgramInputRow
+            {
+                const InputStats* input = nullptr;
+                const AppInputStats* app = nullptr;
+            };
+
+            std::vector<ProgramInputRow> rows;
+            for (const InputStats& input : g_inputs)
+            {
+                for (const AppInputStats& app : input.appTotals)
+                {
+                    if (app.processId == g_selectedProgramPid && app.appName == g_selectedProgramName)
+                        rows.push_back({ &input, &app });
+                }
+            }
+
+            const ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs();
+            const int column = SortColumn(sortSpecs, 2);
+            const bool ascending = SortAscending(sortSpecs);
+            SortWithDirection(rows, ascending, [&](const ProgramInputRow& a, const ProgramInputRow& b) {
+                switch (column)
+                {
+                case 0: return a.input->device < b.input->device;
+                case 1: return a.input->label < b.input->label;
+                case 2: return a.app->total < b.app->total;
+                case 3: return a.app->downTotal < b.app->downTotal;
+                case 4: return a.app->upTotal < b.app->upTotal;
+                case 5: return a.app->windowTitle < b.app->windowTitle;
+                default: return a.app->total < b.app->total;
+                }
+            });
+
+            for (const ProgramInputRow& row : rows)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(row.input->device.c_str());
+                ImGui::TableSetColumnIndex(1);
+                const bool selected = row.input->id == g_selectedInputId;
+                const std::string selectableLabel = row.input->label + "##program-input:" + row.input->id;
+                if (ImGui::Selectable(selectableLabel.c_str(), selected, ImGuiSelectableFlags_SpanAllColumns))
+                    g_selectedInputId = row.input->id;
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%llu", static_cast<unsigned long long>(row.app->total));
+                ImGui::TableSetColumnIndex(3);
+                ImGui::Text("%llu", static_cast<unsigned long long>(row.app->downTotal));
+                ImGui::TableSetColumnIndex(4);
+                ImGui::Text("%llu", static_cast<unsigned long long>(row.app->upTotal));
+                ImGui::TableSetColumnIndex(5);
+                ImGui::TextUnformatted(row.app->windowTitle.c_str());
             }
 
             ImGui::EndTable();
