@@ -1,0 +1,9 @@
+build/
+build-mingw/
+cmake-build-debug/
+.vs/
+out/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
