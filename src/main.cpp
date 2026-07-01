@@ -1090,16 +1090,13 @@ namespace
             ImGuiID rightDockId = 0;
             ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, 0.42f, &historyDockId, &rightDockId);
 
-            ImGuiID totalsDockId = 0;
             ImGuiID lowerRightDockId = 0;
-            ImGui::DockBuilderSplitNode(rightDockId, ImGuiDir_Up, 0.22f, &totalsDockId, &lowerRightDockId);
 
             ImGuiID detailsDockId = 0;
             ImGuiID inputTotalsDockId = 0;
-            ImGui::DockBuilderSplitNode(lowerRightDockId, ImGuiDir_Down, 0.45f, &detailsDockId, &inputTotalsDockId);
+            ImGui::DockBuilderSplitNode(rightDockId, ImGuiDir_Down, 0.45f, &detailsDockId, &inputTotalsDockId);
 
             ImGui::DockBuilderDockWindow("Home / History", historyDockId);
-            ImGui::DockBuilderDockWindow("Home / Totals", totalsDockId);
             ImGui::DockBuilderDockWindow("Home / Input Totals", inputTotalsDockId);
             ImGui::DockBuilderDockWindow("Home / Details", detailsDockId);
             ImGui::DockBuilderFinish(dockspaceId);
@@ -1113,14 +1110,10 @@ namespace
         }
         ImGui::End();
 
-        if (ImGui::Begin("Home / Totals"))
-        {
-            DrawOverviewStats();
-        }
-        ImGui::End();
-
         if (ImGui::Begin("Home / Input Totals"))
         {
+            DrawOverviewStats();
+            ImGui::Separator();
             DrawInputSummaryTable("home-input-summary", nullptr, ImGui::GetContentRegionAvail().y);
         }
         ImGui::End();
