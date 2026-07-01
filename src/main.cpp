@@ -841,6 +841,85 @@ namespace
         }
     }
 
+    void DrawRecentHistoryTable(float height)
+    {
+        struct HistoryRow
+        {
+            const InputStats* input = nullptr;
+            const InputEvent* event = nullptr;
+        };
+
+        std::vector<HistoryRow> rows;
+        for (const InputStats& input : g_inputs)
+        {
+            for (const InputEvent& event : input.events)
+                rows.push_back({ &input, &event });
+        }
+
+        std::sort(rows.begin(), rows.end(), [](const HistoryRow& a, const HistoryRow& b) {
+            return a.event->timeSeconds > b.event->timeSeconds;
+        });
+
+        if (rows.size() > 300)
+            rows.resize(300);
+
+        constexpr ImGuiTableFlags tableFlags =
+            ImGuiTableFlags_Borders |
+            ImGuiTableFlags_RowBg |
+            ImGuiTableFlags_Resizable |
+            ImGuiTableFlags_ScrollY |
+            ImGuiTableFlags_Sortable;
+
+        if (ImGui::BeginTable("home-history", 6, tableFlags, ImVec2(0, height)))
+        {
+            ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_DefaultSort);
+            ImGui::TableSetupColumn("Device");
+            ImGui::TableSetupColumn("Input");
+            ImGui::TableSetupColumn("Event");
+            ImGui::TableSetupColumn("Program");
+            ImGui::TableSetupColumn("Detail");
+            ImGui::TableHeadersRow();
+
+            const ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs();
+            const int column = SortColumn(sortSpecs, 0);
+            const bool ascending = SortAscending(sortSpecs);
+            SortWithDirection(rows, ascending, [&](const HistoryRow& a, const HistoryRow& b) {
+                switch (column)
+                {
+                case 0: return a.event->timeSeconds < b.event->timeSeconds;
+                case 1: return a.input->device < b.input->device;
+                case 2: return a.input->label < b.input->label;
+                case 3: return a.event->action < b.event->action;
+                case 4: return a.event->appName < b.event->appName;
+                case 5: return a.event->detail < b.event->detail;
+                default: return a.event->timeSeconds < b.event->timeSeconds;
+                }
+            });
+
+            for (const HistoryRow& row : rows)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::Text("%.3f", row.event->timeSeconds);
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(row.input->device.c_str());
+                ImGui::TableSetColumnIndex(2);
+                const bool selected = row.input->id == g_selectedInputId;
+                const std::string selectableLabel = row.input->label + "##history:" + row.input->id + ":" + std::to_string(row.event->timeSeconds);
+                if (ImGui::Selectable(selectableLabel.c_str(), selected, ImGuiSelectableFlags_SpanAllColumns))
+                    g_selectedInputId = row.input->id;
+                ImGui::TableSetColumnIndex(3);
+                ImGui::TextUnformatted(row.event->action.c_str());
+                ImGui::TableSetColumnIndex(4);
+                ImGui::TextUnformatted(row.event->appName.c_str());
+                ImGui::TableSetColumnIndex(5);
+                ImGui::TextUnformatted(row.event->detail.c_str());
+            }
+
+            ImGui::EndTable();
+        }
+    }
+
     void DrawSelectedInputDetails(float height)
     {
         InputStats* selectedInput = FindInputStats(g_selectedInputId);
@@ -955,13 +1034,27 @@ namespace
 
     void DrawHomeTab()
     {
+        const ImVec2 available = ImGui::GetContentRegionAvail();
+        const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float leftWidth = std::max(300.0f, available.x * 0.42f);
+        const float rightWidth = std::max(260.0f, available.x - leftWidth - spacing);
+
+        ImGui::BeginChild("home-history-pane", ImVec2(leftWidth, 0), true);
+        ImGui::TextUnformatted("History");
+        DrawRecentHistoryTable(ImGui::GetContentRegionAvail().y);
+        ImGui::EndChild();
+
+        ImGui::SameLine();
+
+        ImGui::BeginChild("home-detail-pane", ImVec2(rightWidth, 0), true);
         DrawOverviewStats();
         ImGui::Spacing();
 
-        const float availableHeight = ImGui::GetContentRegionAvail().y;
-        DrawInputSummaryTable("home-input-summary", nullptr, std::max(160.0f, availableHeight * 0.48f));
+        const float rightHeight = ImGui::GetContentRegionAvail().y;
+        DrawInputSummaryTable("home-input-summary", nullptr, std::max(130.0f, rightHeight * 0.42f));
         ImGui::Spacing();
         DrawSelectedInputDetails(ImGui::GetContentRegionAvail().y);
+        ImGui::EndChild();
     }
 
     void DrawKeyboardTab()
