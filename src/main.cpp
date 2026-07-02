@@ -76,7 +76,7 @@ namespace
     {
         std::string appName;
         DWORD processId = 0;
-        std::array<uint32_t, 48 * 27> bins{};
+        std::vector<uint32_t> bins;
         uint32_t maxBin = 0;
     };
 
@@ -84,7 +84,9 @@ namespace
     {
         RECT rect{};
         std::string name;
-        std::array<uint32_t, 48 * 27> bins{};
+        int columns = 0;
+        int rows = 0;
+        std::vector<uint32_t> bins;
         uint32_t maxBin = 0;
         std::vector<ProgramHeatmap> programHeatmaps;
     };
@@ -118,6 +120,8 @@ namespace
     bool g_rawInputRegistered = false;
     bool g_trayIconVisible = false;
     bool g_autoSaveEnabled = true;
+    float g_heatmapCellScale = 0.02f;
+    int g_cursorHeatRadiusPixels = 24;
     std::string g_dataFilePath = "keynalysis_autosave.kna";
     std::string g_settingsFilePath = "keynalysis_settings.cfg";
     std::string g_imguiIniPath = "keynalysis_imgui.ini";
@@ -127,8 +131,8 @@ namespace
 
     constexpr UINT WM_TRAYICON = WM_APP + 1;
     constexpr UINT TRAY_ICON_ID = 1;
-    constexpr int HEATMAP_COLUMNS = 48;
-    constexpr int HEATMAP_ROWS = 27;
+    constexpr int LEGACY_HEATMAP_COLUMNS = 48;
+    constexpr int LEGACY_HEATMAP_ROWS = 27;
     constexpr int AUTO_SAVE_SECONDS = 5 * 60;
 
     double NowSeconds()
@@ -272,8 +276,25 @@ namespace
         if ((info.dwFlags & MONITORINFOF_PRIMARY) != 0)
             heatmap.name += " (Primary)";
 
+        const int width = static_cast<int>(std::max(1L, heatmap.rect.right - heatmap.rect.left));
+        const int height = static_cast<int>(std::max(1L, heatmap.rect.bottom - heatmap.rect.top));
+        const float cellPixels = std::max(1.0f, static_cast<float>(std::max(width, height)) * g_heatmapCellScale);
+        heatmap.columns = std::clamp(static_cast<int>(std::ceil(static_cast<float>(width) / cellPixels)), 1, 512);
+        heatmap.rows = std::clamp(static_cast<int>(std::ceil(static_cast<float>(height) / cellPixels)), 1, 512);
+        heatmap.bins.assign(static_cast<size_t>(heatmap.columns * heatmap.rows), 0);
+
         g_monitors.push_back(std::move(heatmap));
         return TRUE;
+    }
+
+    void ClearHeatmapData()
+    {
+        for (MonitorHeatmap& monitor : g_monitors)
+        {
+            monitor.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
+            monitor.maxBin = 0;
+            monitor.programHeatmaps.clear();
+        }
     }
 
     void RefreshMonitors()
@@ -310,7 +331,11 @@ namespace
                 return programHeatmap;
         }
 
-        monitor.programHeatmaps.push_back({ focus.appName, focus.processId });
+        ProgramHeatmap programHeatmap;
+        programHeatmap.appName = focus.appName;
+        programHeatmap.processId = focus.processId;
+        programHeatmap.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
+        monitor.programHeatmaps.push_back(std::move(programHeatmap));
         return monitor.programHeatmaps.back();
     }
 
@@ -338,18 +363,38 @@ namespace
         const RECT& rect = heatmap.rect;
         const int width = static_cast<int>(std::max(1L, rect.right - rect.left));
         const int height = static_cast<int>(std::max(1L, rect.bottom - rect.top));
-        const int rawBinX = static_cast<int>((cursor.x - rect.left) * HEATMAP_COLUMNS / width);
-        const int rawBinY = static_cast<int>((cursor.y - rect.top) * HEATMAP_ROWS / height);
-        const int binX = std::clamp(rawBinX, 0, HEATMAP_COLUMNS - 1);
-        const int binY = std::clamp(rawBinY, 0, HEATMAP_ROWS - 1);
-        const int binIndex = binY * HEATMAP_COLUMNS + binX;
-
-        ++heatmap.bins[binIndex];
-        heatmap.maxBin = std::max(heatmap.maxBin, heatmap.bins[binIndex]);
-
+        const int rawBinX = static_cast<int>((cursor.x - rect.left) * heatmap.columns / width);
+        const int rawBinY = static_cast<int>((cursor.y - rect.top) * heatmap.rows / height);
         ProgramHeatmap& programHeatmap = GetProgramHeatmap(heatmap, focus);
-        ++programHeatmap.bins[binIndex];
-        programHeatmap.maxBin = std::max(programHeatmap.maxBin, programHeatmap.bins[binIndex]);
+        const int centerBinX = std::clamp(rawBinX, 0, heatmap.columns - 1);
+        const int centerBinY = std::clamp(rawBinY, 0, heatmap.rows - 1);
+        const float cellW = static_cast<float>(width) / static_cast<float>(std::max(1, heatmap.columns));
+        const float cellH = static_cast<float>(height) / static_cast<float>(std::max(1, heatmap.rows));
+        const int radiusBinsX = std::max(0, static_cast<int>(std::ceil(static_cast<float>(g_cursorHeatRadiusPixels) / std::max(1.0f, cellW))));
+        const int radiusBinsY = std::max(0, static_cast<int>(std::ceil(static_cast<float>(g_cursorHeatRadiusPixels) / std::max(1.0f, cellH))));
+        const int minX = std::clamp(centerBinX - radiusBinsX, 0, heatmap.columns - 1);
+        const int maxX = std::clamp(centerBinX + radiusBinsX, 0, heatmap.columns - 1);
+        const int minY = std::clamp(centerBinY - radiusBinsY, 0, heatmap.rows - 1);
+        const int maxY = std::clamp(centerBinY + radiusBinsY, 0, heatmap.rows - 1);
+
+        for (int y = minY; y <= maxY; ++y)
+        {
+            for (int x = minX; x <= maxX; ++x)
+            {
+                const float cellCenterX = rect.left + (static_cast<float>(x) + 0.5f) * cellW;
+                const float cellCenterY = rect.top + (static_cast<float>(y) + 0.5f) * cellH;
+                const float dx = cellCenterX - static_cast<float>(cursor.x);
+                const float dy = cellCenterY - static_cast<float>(cursor.y);
+                if ((dx * dx + dy * dy) > static_cast<float>(g_cursorHeatRadiusPixels * g_cursorHeatRadiusPixels))
+                    continue;
+
+                const int binIndex = y * heatmap.columns + x;
+                ++heatmap.bins[binIndex];
+                heatmap.maxBin = std::max(heatmap.maxBin, heatmap.bins[binIndex]);
+                ++programHeatmap.bins[binIndex];
+                programHeatmap.maxBin = std::max(programHeatmap.maxBin, programHeatmap.bins[binIndex]);
+            }
+        }
     }
 
     InputStats& GetInputStats(const std::string& id, const std::string& device, const std::string& label)
@@ -508,6 +553,8 @@ namespace
         WriteString(out, g_imguiIniPath);
         const uint8_t autoSave = g_autoSaveEnabled ? 1 : 0;
         WriteValue(out, autoSave);
+        WriteValue(out, g_heatmapCellScale);
+        WriteValue(out, g_cursorHeatRadiusPixels);
         return out.good();
     }
 
@@ -526,14 +573,21 @@ namespace
         std::string dataPath;
         std::string iniPath;
         uint8_t autoSave = 1;
+        float heatmapCellScale = g_heatmapCellScale;
+        int cursorHeatRadiusPixels = g_cursorHeatRadiusPixels;
         if (!ReadString(in, dataPath) || !ReadString(in, iniPath) || !ReadValue(in, autoSave))
             return false;
+
+        ReadValue(in, heatmapCellScale);
+        ReadValue(in, cursorHeatRadiusPixels);
 
         if (!dataPath.empty())
             g_dataFilePath = dataPath;
         if (!iniPath.empty())
             g_imguiIniPath = iniPath;
         g_autoSaveEnabled = autoSave != 0;
+        g_heatmapCellScale = std::clamp(heatmapCellScale, 0.005f, 0.08f);
+        g_cursorHeatRadiusPixels = std::clamp(cursorHeatRadiusPixels, 0, 250);
         return true;
     }
 
@@ -546,9 +600,11 @@ namespace
             return false;
         }
 
-        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '2', '\0' };
+        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '3', '\0' };
         out.write(magic, sizeof(magic));
 
+        WriteValue(out, g_heatmapCellScale);
+        WriteValue(out, g_cursorHeatRadiusPixels);
         WriteValue(out, g_mouseDelta.x);
         WriteValue(out, g_mouseDelta.y);
         WriteValue(out, g_wheelDelta);
@@ -590,6 +646,8 @@ namespace
             WriteValue(out, monitor.rect.right);
             WriteValue(out, monitor.rect.bottom);
             WriteString(out, monitor.name);
+            WriteValue(out, monitor.columns);
+            WriteValue(out, monitor.rows);
             WriteValue(out, monitor.maxBin);
             out.write(reinterpret_cast<const char*>(monitor.bins.data()), static_cast<std::streamsize>(monitor.bins.size() * sizeof(uint32_t)));
 
@@ -630,9 +688,11 @@ namespace
         in.read(magic, sizeof(magic));
         const char expectedV1[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '1', '\0' };
         const char expectedV2[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '2', '\0' };
+        const char expectedV3[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '3', '\0' };
         const bool isV1 = memcmp(magic, expectedV1, sizeof(expectedV1)) == 0;
         const bool isV2 = memcmp(magic, expectedV2, sizeof(expectedV2)) == 0;
-        if (!isV1 && !isV2)
+        const bool isV3 = memcmp(magic, expectedV3, sizeof(expectedV3)) == 0;
+        if (!isV1 && !isV2 && !isV3)
         {
             g_saveLoadStatus = "Load failed: invalid file format.";
             return false;
@@ -645,6 +705,18 @@ namespace
         int loadedLeftClicks = 0;
         int loadedRightClicks = 0;
         int loadedMiddleClicks = 0;
+        float loadedHeatmapCellScale = g_heatmapCellScale;
+        int loadedCursorHeatRadiusPixels = g_cursorHeatRadiusPixels;
+
+        if (isV3)
+        {
+            if (!ReadValue(in, loadedHeatmapCellScale) ||
+                !ReadValue(in, loadedCursorHeatRadiusPixels))
+            {
+                g_saveLoadStatus = "Load failed: invalid heatmap settings.";
+                return false;
+            }
+        }
 
         if (!ReadValue(in, loadedMouseDelta.x) ||
             !ReadValue(in, loadedMouseDelta.y) ||
@@ -723,13 +795,40 @@ namespace
                 !ReadValue(in, monitor.rect.top) ||
                 !ReadValue(in, monitor.rect.right) ||
                 !ReadValue(in, monitor.rect.bottom) ||
-                !ReadString(in, monitor.name) ||
-                !ReadValue(in, monitor.maxBin))
+                !ReadString(in, monitor.name))
             {
                 g_saveLoadStatus = "Load failed: invalid monitor data.";
                 return false;
             }
 
+            if (isV3)
+            {
+                if (!ReadValue(in, monitor.columns) ||
+                    !ReadValue(in, monitor.rows) ||
+                    !ReadValue(in, monitor.maxBin))
+                {
+                    g_saveLoadStatus = "Load failed: invalid monitor grid data.";
+                    return false;
+                }
+            }
+            else
+            {
+                monitor.columns = LEGACY_HEATMAP_COLUMNS;
+                monitor.rows = LEGACY_HEATMAP_ROWS;
+                if (!ReadValue(in, monitor.maxBin))
+                {
+                    g_saveLoadStatus = "Load failed: invalid legacy monitor data.";
+                    return false;
+                }
+            }
+
+            if (monitor.columns <= 0 || monitor.rows <= 0 || monitor.columns > 512 || monitor.rows > 512)
+            {
+                g_saveLoadStatus = "Load failed: invalid heatmap dimensions.";
+                return false;
+            }
+
+            monitor.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
             in.read(reinterpret_cast<char*>(monitor.bins.data()), static_cast<std::streamsize>(monitor.bins.size() * sizeof(uint32_t)));
             if (!in.good())
             {
@@ -758,6 +857,7 @@ namespace
                         return false;
                     }
 
+                    programHeatmap.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
                     in.read(reinterpret_cast<char*>(programHeatmap.bins.data()), static_cast<std::streamsize>(programHeatmap.bins.size() * sizeof(uint32_t)));
                     if (!in.good())
                     {
@@ -779,6 +879,8 @@ namespace
         g_leftClicks = loadedLeftClicks;
         g_rightClicks = loadedRightClicks;
         g_middleClicks = loadedMiddleClicks;
+        g_heatmapCellScale = std::clamp(loadedHeatmapCellScale, 0.005f, 0.08f);
+        g_cursorHeatRadiusPixels = std::clamp(loadedCursorHeatRadiusPixels, 0, 250);
         g_selectedInputId.clear();
         g_selectedProgramName.clear();
         g_selectedProgramPid = 0;
@@ -841,7 +943,7 @@ namespace
         g_mouseDeltaSamples.clear();
         for (MonitorHeatmap& monitor : g_monitors)
         {
-            monitor.bins.fill(0);
+            monitor.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
             monitor.maxBin = 0;
             monitor.programHeatmaps.clear();
         }
@@ -1215,6 +1317,19 @@ namespace
         if (g_monitors.empty())
             RefreshMonitors();
 
+        float pendingCellScale = g_heatmapCellScale;
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderFloat("Cell scale", &pendingCellScale, 0.005f, 0.08f, "%.3f"))
+        {
+            g_heatmapCellScale = pendingCellScale;
+            RefreshMonitors();
+            SaveAppSettings();
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::SliderInt("Radius px", &g_cursorHeatRadiusPixels, 0, 250))
+            SaveAppSettings();
+
         if (!g_monitors.empty())
         {
             std::vector<const char*> monitorNames;
@@ -1250,7 +1365,7 @@ namespace
 
         g_selectedMonitorIndex = std::clamp(g_selectedMonitorIndex, 0, static_cast<int>(g_monitors.size()) - 1);
         const MonitorHeatmap& heatmap = g_monitors[g_selectedMonitorIndex];
-        const std::array<uint32_t, HEATMAP_COLUMNS * HEATMAP_ROWS>* bins = &heatmap.bins;
+        const std::vector<uint32_t>* bins = &heatmap.bins;
         uint32_t maxBin = heatmap.maxBin;
         if (g_visualFilterProgramPid != 0)
         {
@@ -1267,16 +1382,22 @@ namespace
             }
         }
 
-        const float cellW = canvasSize.x / static_cast<float>(HEATMAP_COLUMNS);
-        const float cellH = canvasSize.y / static_cast<float>(HEATMAP_ROWS);
+        const int columns = std::max(1, heatmap.columns);
+        const int rows = std::max(1, heatmap.rows);
+        const float cellW = canvasSize.x / static_cast<float>(columns);
+        const float cellH = canvasSize.y / static_cast<float>(rows);
 
         if (bins)
         {
-            for (int y = 0; y < HEATMAP_ROWS; ++y)
+            for (int y = 0; y < rows; ++y)
             {
-                for (int x = 0; x < HEATMAP_COLUMNS; ++x)
+                for (int x = 0; x < columns; ++x)
                 {
-                    const uint32_t count = (*bins)[y * HEATMAP_COLUMNS + x];
+                    const size_t binIndex = static_cast<size_t>(y * columns + x);
+                    if (binIndex >= bins->size())
+                        continue;
+
+                    const uint32_t count = (*bins)[binIndex];
                     if (count == 0)
                         continue;
 
@@ -1288,12 +1409,12 @@ namespace
             }
         }
 
-        for (int x = 1; x < HEATMAP_COLUMNS; ++x)
+        for (int x = 1; x < columns; ++x)
         {
             const float gx = origin.x + x * cellW;
             drawList->AddLine(ImVec2(gx, origin.y), ImVec2(gx, end.y), IM_COL32(45, 50, 58, 75));
         }
-        for (int y = 1; y < HEATMAP_ROWS; ++y)
+        for (int y = 1; y < rows; ++y)
         {
             const float gy = origin.y + y * cellH;
             drawList->AddLine(ImVec2(origin.x, gy), ImVec2(end.x, gy), IM_COL32(45, 50, 58, 75));
@@ -2547,6 +2668,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     const bool loadedAppSettings = LoadAppSettings();
     io.IniFilename = g_imguiIniPath.c_str();
+    RefreshMonitors();
     if (FileExists(g_imguiIniPath))
         DisableDefaultDockRebuilds();
 
