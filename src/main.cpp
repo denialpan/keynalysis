@@ -127,6 +127,7 @@ namespace
     std::string g_imguiIniPath = "keynalysis_imgui.ini";
     std::string g_saveLoadStatus;
     auto g_lastAutoSaveTime = std::chrono::steady_clock::now();
+    double g_loadedRuntimeSeconds = 0.0;
     auto g_startTime = std::chrono::steady_clock::now();
 
     constexpr UINT WM_TRAYICON = WM_APP + 1;
@@ -138,7 +139,7 @@ namespace
     double NowSeconds()
     {
         using namespace std::chrono;
-        return duration<double>(steady_clock::now() - g_startTime).count();
+        return g_loadedRuntimeSeconds + duration<double>(steady_clock::now() - g_startTime).count();
     }
 
     std::string WideToUtf8(const wchar_t* text)
@@ -600,9 +601,11 @@ namespace
             return false;
         }
 
-        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '3', '\0' };
+        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '4', '\0' };
         out.write(magic, sizeof(magic));
 
+        const double runtimeSeconds = NowSeconds();
+        WriteValue(out, runtimeSeconds);
         WriteValue(out, g_heatmapCellScale);
         WriteValue(out, g_cursorHeatRadiusPixels);
         WriteValue(out, g_mouseDelta.x);
@@ -689,10 +692,12 @@ namespace
         const char expectedV1[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '1', '\0' };
         const char expectedV2[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '2', '\0' };
         const char expectedV3[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '3', '\0' };
+        const char expectedV4[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '4', '\0' };
         const bool isV1 = memcmp(magic, expectedV1, sizeof(expectedV1)) == 0;
         const bool isV2 = memcmp(magic, expectedV2, sizeof(expectedV2)) == 0;
         const bool isV3 = memcmp(magic, expectedV3, sizeof(expectedV3)) == 0;
-        if (!isV1 && !isV2 && !isV3)
+        const bool isV4 = memcmp(magic, expectedV4, sizeof(expectedV4)) == 0;
+        if (!isV1 && !isV2 && !isV3 && !isV4)
         {
             g_saveLoadStatus = "Load failed: invalid file format.";
             return false;
@@ -707,8 +712,18 @@ namespace
         int loadedMiddleClicks = 0;
         float loadedHeatmapCellScale = g_heatmapCellScale;
         int loadedCursorHeatRadiusPixels = g_cursorHeatRadiusPixels;
+        double loadedRuntimeSeconds = 0.0;
 
-        if (isV3)
+        if (isV4)
+        {
+            if (!ReadValue(in, loadedRuntimeSeconds))
+            {
+                g_saveLoadStatus = "Load failed: invalid runtime data.";
+                return false;
+            }
+        }
+
+        if (isV3 || isV4)
         {
             if (!ReadValue(in, loadedHeatmapCellScale) ||
                 !ReadValue(in, loadedCursorHeatRadiusPixels))
@@ -780,6 +795,12 @@ namespace
             loadedInputs.push_back(std::move(input));
         }
 
+        if (!isV4)
+        {
+            for (const InputStats& input : loadedInputs)
+                loadedRuntimeSeconds = std::max(loadedRuntimeSeconds, input.lastTimeSeconds);
+        }
+
         uint32_t monitorCount = 0;
         if (!ReadValue(in, monitorCount) || monitorCount > 128)
         {
@@ -801,7 +822,7 @@ namespace
                 return false;
             }
 
-            if (isV3)
+            if (isV3 || isV4)
             {
                 if (!ReadValue(in, monitor.columns) ||
                     !ReadValue(in, monitor.rows) ||
@@ -836,7 +857,7 @@ namespace
                 return false;
             }
 
-            if (isV2)
+            if (isV2 || isV3 || isV4)
             {
                 uint32_t programHeatmapCount = 0;
                 if (!ReadValue(in, programHeatmapCount) || programHeatmapCount > 100000)
@@ -881,6 +902,8 @@ namespace
         g_middleClicks = loadedMiddleClicks;
         g_heatmapCellScale = std::clamp(loadedHeatmapCellScale, 0.005f, 0.08f);
         g_cursorHeatRadiusPixels = std::clamp(loadedCursorHeatRadiusPixels, 0, 250);
+        g_loadedRuntimeSeconds = std::max(0.0, loadedRuntimeSeconds);
+        g_startTime = std::chrono::steady_clock::now();
         g_selectedInputId.clear();
         g_selectedProgramName.clear();
         g_selectedProgramPid = 0;
@@ -952,6 +975,8 @@ namespace
         g_leftClicks = 0;
         g_rightClicks = 0;
         g_middleClicks = 0;
+        g_loadedRuntimeSeconds = 0.0;
+        g_startTime = std::chrono::steady_clock::now();
     }
 
     void CreateRenderTarget()
@@ -1477,6 +1502,74 @@ namespace
         }
 
         return total;
+    }
+
+    uint64_t TotalInvocationsExactDevice(const char* device)
+    {
+        uint64_t total = 0;
+        for (const InputStats& input : g_inputs)
+        {
+            if (input.device == device)
+                total += input.total;
+        }
+
+        return total;
+    }
+
+    int CountTrackedPrograms()
+    {
+        struct TrackedProgram
+        {
+            std::string appName;
+            DWORD processId = 0;
+        };
+
+        std::vector<TrackedProgram> programs;
+        for (const InputStats& input : g_inputs)
+        {
+            for (const AppInputStats& app : input.appTotals)
+            {
+                const bool exists = std::any_of(programs.begin(), programs.end(), [&](const TrackedProgram& program) {
+                    return program.processId == app.processId && program.appName == app.appName;
+                });
+                if (!exists)
+                    programs.push_back({ app.appName, app.processId });
+            }
+        }
+
+        return static_cast<int>(programs.size());
+    }
+
+    std::string FormatDuration(double seconds)
+    {
+        uint64_t totalSeconds = static_cast<uint64_t>(std::max(0.0, seconds));
+        const uint64_t hours = totalSeconds / 3600;
+        totalSeconds %= 3600;
+        const uint64_t minutes = totalSeconds / 60;
+        const uint64_t secs = totalSeconds % 60;
+
+        char buffer[64]{};
+        snprintf(buffer, sizeof(buffer), "%lluh %02llum %02llus",
+            static_cast<unsigned long long>(hours),
+            static_cast<unsigned long long>(minutes),
+            static_cast<unsigned long long>(secs));
+        return buffer;
+    }
+
+    void DrawGlobalSummary()
+    {
+        ImGui::SeparatorText("Global Summary");
+        ImGui::Text("Total inputs: %llu |", static_cast<unsigned long long>(TotalInvocations()));
+        ImGui::SameLine();
+        ImGui::Text("Keyboard: %llu |", static_cast<unsigned long long>(TotalInvocationsExactDevice("Keyboard")));
+        ImGui::SameLine();
+        ImGui::Text("Combos: %llu |", static_cast<unsigned long long>(TotalInvocationsExactDevice("Keyboard Combo")));
+        ImGui::SameLine();
+        ImGui::Text("Mouse: %llu |", static_cast<unsigned long long>(TotalInvocationsExactDevice("Mouse")));
+        ImGui::SameLine();
+        ImGui::Text("Programs: %d |", CountTrackedPrograms());
+        ImGui::SameLine();
+        ImGui::Text("File time: %s |", FormatDuration(NowSeconds()).c_str());
     }
 
     void DrawToolbar()
@@ -2542,6 +2635,8 @@ namespace
         ImGui::TextUnformatted("Keyboard and mouse input test process");
         ImGui::Separator();
         DrawToolbar();
+        ImGui::Spacing();
+        DrawGlobalSummary();
         ImGui::Spacing();
 
         if (ImGui::BeginTabBar("main-tabs"))
