@@ -965,11 +965,14 @@ namespace
         ImGui::Text("Last time: %.3f", selectedInput->lastTimeSeconds);
     }
 
-    void DrawKeyButton(const char* label, int virtualKey, float widthUnits = 1.0f, float heightUnits = 1.0f)
+    void DrawKeyButton(const char* label, int virtualKey, float widthUnits = 1.0f, float heightUnits = 1.0f, const std::string& widgetSuffix = {})
     {
         const float unitWidth = 42.0f;
         const float unitHeight = 34.0f;
-        const ImVec2 size(unitWidth * widthUnits, unitHeight * heightUnits + 4.0f * (heightUnits - 1.0f));
+        const float gap = 4.0f;
+        const ImVec2 size(
+            unitWidth * widthUnits + gap * std::max(0.0f, widthUnits - 1.0f),
+            unitHeight * heightUnits + gap * std::max(0.0f, heightUnits - 1.0f));
         const std::string id = "key:" + std::to_string(virtualKey);
         InputStats* stats = FindInputStats(id);
         const bool selected = g_selectedInputId == id;
@@ -1002,7 +1005,7 @@ namespace
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hovered);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, active);
 
-        const std::string buttonLabel = std::string(label) + "##diagram:" + id;
+        const std::string buttonLabel = std::string(label) + "##diagram:" + id + ":" + widgetSuffix;
         if (ImGui::Button(buttonLabel.c_str(), size))
             g_selectedInputId = id;
 
@@ -1039,7 +1042,9 @@ namespace
 
         auto place = [&](float col, float row, const char* label, int vk, float width = 1.0f, float height = 1.0f) {
             ImGui::SetCursorPos(ImVec2(start.x + col * stepX, start.y + row * stepY));
-            DrawKeyButton(label, vk, width, height);
+            char suffix[64]{};
+            snprintf(suffix, sizeof(suffix), "%.2f:%.2f", col, row);
+            DrawKeyButton(label, vk, width, height, suffix);
         };
 
         place(0.0f, 0.0f, "Esc", VK_ESCAPE);
@@ -1048,22 +1053,22 @@ namespace
         place(11.0f, 0.0f, "F9", VK_F9); place(12.0f, 0.0f, "F10", VK_F10); place(13.0f, 0.0f, "F11", VK_F11); place(14.0f, 0.0f, "F12", VK_F12);
         place(15.5f, 0.0f, "Prt", VK_SNAPSHOT); place(16.5f, 0.0f, "Scr", VK_SCROLL); place(17.5f, 0.0f, "Pause", VK_PAUSE);
 
-        place(0.0f, 1.4f, "`", VK_OEM_3); place(1.0f, 1.4f, "1", '1'); place(2.0f, 1.4f, "2", '2'); place(3.0f, 1.4f, "3", '3'); place(4.0f, 1.4f, "4", '4'); place(5.0f, 1.4f, "5", '5'); place(6.0f, 1.4f, "6", '6'); place(7.0f, 1.4f, "7", '7'); place(8.0f, 1.4f, "8", '8'); place(9.0f, 1.4f, "9", '9'); place(10.0f, 1.4f, "0", '0'); place(11.0f, 1.4f, "-", VK_OEM_MINUS); place(12.0f, 1.4f, "=", VK_OEM_PLUS); place(13.0f, 1.4f, "Backspace", VK_BACK, 2.1f);
+        place(0.0f, 1.4f, "`", VK_OEM_3); place(1.0f, 1.4f, "1", '1'); place(2.0f, 1.4f, "2", '2'); place(3.0f, 1.4f, "3", '3'); place(4.0f, 1.4f, "4", '4'); place(5.0f, 1.4f, "5", '5'); place(6.0f, 1.4f, "6", '6'); place(7.0f, 1.4f, "7", '7'); place(8.0f, 1.4f, "8", '8'); place(9.0f, 1.4f, "9", '9'); place(10.0f, 1.4f, "0", '0'); place(11.0f, 1.4f, "-", VK_OEM_MINUS); place(12.0f, 1.4f, "=", VK_OEM_PLUS); place(13.0f, 1.4f, "Backspace", VK_BACK, 2.0f);
         place(15.5f, 1.4f, "Ins", VK_INSERT); place(16.5f, 1.4f, "Home", VK_HOME); place(17.5f, 1.4f, "PgUp", VK_PRIOR);
         place(19.0f, 1.4f, "Num", VK_NUMLOCK); place(20.0f, 1.4f, "/", VK_DIVIDE); place(21.0f, 1.4f, "*", VK_MULTIPLY); place(22.0f, 1.4f, "-", VK_SUBTRACT);
 
-        place(0.0f, 2.4f, "Tab", VK_TAB, 1.55f); place(1.55f, 2.4f, "Q", 'Q'); place(2.55f, 2.4f, "W", 'W'); place(3.55f, 2.4f, "E", 'E'); place(4.55f, 2.4f, "R", 'R'); place(5.55f, 2.4f, "T", 'T'); place(6.55f, 2.4f, "Y", 'Y'); place(7.55f, 2.4f, "U", 'U'); place(8.55f, 2.4f, "I", 'I'); place(9.55f, 2.4f, "O", 'O'); place(10.55f, 2.4f, "P", 'P'); place(11.55f, 2.4f, "[", VK_OEM_4); place(12.55f, 2.4f, "]", VK_OEM_6); place(13.55f, 2.4f, "\\", VK_OEM_5, 1.55f);
+        place(0.0f, 2.4f, "Tab", VK_TAB, 1.5f); place(1.5f, 2.4f, "Q", 'Q'); place(2.5f, 2.4f, "W", 'W'); place(3.5f, 2.4f, "E", 'E'); place(4.5f, 2.4f, "R", 'R'); place(5.5f, 2.4f, "T", 'T'); place(6.5f, 2.4f, "Y", 'Y'); place(7.5f, 2.4f, "U", 'U'); place(8.5f, 2.4f, "I", 'I'); place(9.5f, 2.4f, "O", 'O'); place(10.5f, 2.4f, "P", 'P'); place(11.5f, 2.4f, "[", VK_OEM_4); place(12.5f, 2.4f, "]", VK_OEM_6); place(13.5f, 2.4f, "\\", VK_OEM_5, 1.5f);
         place(15.5f, 2.4f, "Del", VK_DELETE); place(16.5f, 2.4f, "End", VK_END); place(17.5f, 2.4f, "PgDn", VK_NEXT);
         place(19.0f, 2.4f, "7", VK_NUMPAD7); place(20.0f, 2.4f, "8", VK_NUMPAD8); place(21.0f, 2.4f, "9", VK_NUMPAD9); place(22.0f, 2.4f, "+", VK_ADD, 1.0f, 2.0f);
 
-        place(0.0f, 3.4f, "Caps", VK_CAPITAL, 1.85f); place(1.85f, 3.4f, "A", 'A'); place(2.85f, 3.4f, "S", 'S'); place(3.85f, 3.4f, "D", 'D'); place(4.85f, 3.4f, "F", 'F'); place(5.85f, 3.4f, "G", 'G'); place(6.85f, 3.4f, "H", 'H'); place(7.85f, 3.4f, "J", 'J'); place(8.85f, 3.4f, "K", 'K'); place(9.85f, 3.4f, "L", 'L'); place(10.85f, 3.4f, ";", VK_OEM_1); place(11.85f, 3.4f, "'", VK_OEM_7); place(12.85f, 3.4f, "Enter", VK_RETURN, 2.25f);
+        place(0.0f, 3.4f, "Caps", VK_CAPITAL, 1.75f); place(1.75f, 3.4f, "A", 'A'); place(2.75f, 3.4f, "S", 'S'); place(3.75f, 3.4f, "D", 'D'); place(4.75f, 3.4f, "F", 'F'); place(5.75f, 3.4f, "G", 'G'); place(6.75f, 3.4f, "H", 'H'); place(7.75f, 3.4f, "J", 'J'); place(8.75f, 3.4f, "K", 'K'); place(9.75f, 3.4f, "L", 'L'); place(10.75f, 3.4f, ";", VK_OEM_1); place(11.75f, 3.4f, "'", VK_OEM_7); place(12.75f, 3.4f, "Enter", VK_RETURN, 2.25f);
         place(19.0f, 3.4f, "4", VK_NUMPAD4); place(20.0f, 3.4f, "5", VK_NUMPAD5); place(21.0f, 3.4f, "6", VK_NUMPAD6);
 
-        place(0.0f, 4.4f, "Shift", VK_SHIFT, 2.35f); place(2.35f, 4.4f, "Z", 'Z'); place(3.35f, 4.4f, "X", 'X'); place(4.35f, 4.4f, "C", 'C'); place(5.35f, 4.4f, "V", 'V'); place(6.35f, 4.4f, "B", 'B'); place(7.35f, 4.4f, "N", 'N'); place(8.35f, 4.4f, "M", 'M'); place(9.35f, 4.4f, ",", VK_OEM_COMMA); place(10.35f, 4.4f, ".", VK_OEM_PERIOD); place(11.35f, 4.4f, "/", VK_OEM_2); place(12.35f, 4.4f, "Shift", VK_SHIFT, 2.85f);
+        place(0.0f, 4.4f, "Shift", VK_SHIFT, 2.25f); place(2.25f, 4.4f, "Z", 'Z'); place(3.25f, 4.4f, "X", 'X'); place(4.25f, 4.4f, "C", 'C'); place(5.25f, 4.4f, "V", 'V'); place(6.25f, 4.4f, "B", 'B'); place(7.25f, 4.4f, "N", 'N'); place(8.25f, 4.4f, "M", 'M'); place(9.25f, 4.4f, ",", VK_OEM_COMMA); place(10.25f, 4.4f, ".", VK_OEM_PERIOD); place(11.25f, 4.4f, "/", VK_OEM_2); place(12.25f, 4.4f, "Shift", VK_SHIFT, 2.75f);
         place(16.5f, 4.4f, "Up", VK_UP);
         place(19.0f, 4.4f, "1", VK_NUMPAD1); place(20.0f, 4.4f, "2", VK_NUMPAD2); place(21.0f, 4.4f, "3", VK_NUMPAD3); place(22.0f, 4.4f, "Enter", VK_RETURN, 1.0f, 2.0f);
 
-        place(0.0f, 5.4f, "Ctrl", VK_CONTROL, 1.45f); place(1.45f, 5.4f, "Alt", VK_MENU, 1.35f); place(2.8f, 5.4f, "Space", VK_SPACE, 6.5f); place(9.3f, 5.4f, "Alt", VK_MENU, 1.35f); place(10.65f, 5.4f, "Menu", VK_APPS, 1.35f); place(12.0f, 5.4f, "Ctrl", VK_CONTROL, 1.45f);
+        place(0.0f, 5.4f, "Ctrl", VK_CONTROL, 1.5f); place(1.5f, 5.4f, "Alt", VK_MENU, 1.25f); place(2.75f, 5.4f, "Space", VK_SPACE, 8.25f); place(11.0f, 5.4f, "Alt", VK_MENU, 1.25f); place(12.25f, 5.4f, "Menu", VK_APPS, 1.25f); place(13.5f, 5.4f, "Ctrl", VK_CONTROL, 1.5f);
         place(15.5f, 5.4f, "Left", VK_LEFT); place(16.5f, 5.4f, "Down", VK_DOWN); place(17.5f, 5.4f, "Right", VK_RIGHT);
         place(19.0f, 5.4f, "0", VK_NUMPAD0, 2.0f); place(21.0f, 5.4f, ".", VK_DECIMAL);
 
