@@ -122,6 +122,7 @@ namespace
     bool g_autoSaveEnabled = true;
     float g_heatmapCellScale = 0.02f;
     int g_cursorHeatRadiusPixels = 24;
+    int g_historyMouseMoveLimit = 25;
     std::string g_dataFilePath = "keynalysis_autosave.kna";
     std::string g_settingsFilePath = "keynalysis_settings.cfg";
     std::string g_imguiIniPath = "keynalysis_imgui.ini";
@@ -2033,10 +2034,20 @@ namespace
         };
 
         std::vector<HistoryRow> rows;
+        int mouseMoveRows = 0;
         for (const InputStats& input : g_inputs)
         {
             for (const InputEvent& event : input.events)
+            {
+                if (input.id == "mouse:move")
+                {
+                    if (mouseMoveRows >= g_historyMouseMoveLimit)
+                        continue;
+                    ++mouseMoveRows;
+                }
+
                 rows.push_back({ &input, &event });
+            }
         }
 
         std::sort(rows.begin(), rows.end(), [](const HistoryRow& a, const HistoryRow& b) {
@@ -2251,6 +2262,9 @@ namespace
 
         if (ImGui::Begin("Home / History"))
         {
+            ImGui::SetNextItemWidth(220.0f);
+            ImGui::SliderInt("Mouse movement rows", &g_historyMouseMoveLimit, 0, 300);
+            ImGui::Separator();
             DrawRecentHistoryTable(ImGui::GetContentRegionAvail().y);
         }
         ImGui::End();
