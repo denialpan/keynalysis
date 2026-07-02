@@ -72,6 +72,14 @@ namespace
         double lastInputSeconds = -1.0;
     };
 
+    struct ManualKeyName
+    {
+        USHORT virtualKey = 0;
+        USHORT scanCode = 0;
+        bool extended = false;
+        std::string name;
+    };
+
     struct MouseDeltaSample
     {
         float dx = 0.0f;
@@ -107,6 +115,7 @@ namespace
     std::vector<InputStats> g_inputs;
     std::vector<MonitorHeatmap> g_monitors;
     std::vector<ProgramActivityStats> g_programActivity;
+    std::vector<ManualKeyName> g_manualKeyNames;
     std::string g_selectedInputId;
     std::string g_selectedProgramName;
     DWORD g_selectedProgramPid = 0;
@@ -132,6 +141,13 @@ namespace
     float g_heatmapCellScale = 0.02f;
     int g_cursorHeatRadiusPixels = 24;
     int g_historyMouseMoveLimit = 25;
+    bool g_showRegisterKeyModal = false;
+    bool g_waitingForKeyRegistration = false;
+    bool g_hasCapturedManualKey = false;
+    USHORT g_capturedManualVirtualKey = 0;
+    USHORT g_capturedManualScanCode = 0;
+    bool g_capturedManualExtended = false;
+    char g_manualKeyNameBuffer[128]{};
     std::string g_dataFilePath = "keynalysis_autosave.kna";
     std::string g_settingsFilePath = "keynalysis_settings.cfg";
     std::string g_imguiIniPath = "keynalysis_imgui.ini";
@@ -169,11 +185,54 @@ namespace
         return result;
     }
 
+    const ManualKeyName* FindManualKeyName(USHORT virtualKey, USHORT scanCode, bool extended)
+    {
+        for (const ManualKeyName& manualName : g_manualKeyNames)
+        {
+            if (manualName.virtualKey == virtualKey &&
+                manualName.scanCode == scanCode &&
+                manualName.extended == extended)
+            {
+                return &manualName;
+            }
+        }
+
+        return nullptr;
+    }
+
+    std::string KeyInputId(USHORT virtualKey)
+    {
+        return "key:" + std::to_string(virtualKey);
+    }
+
+    void RegisterManualKeyName(USHORT virtualKey, USHORT scanCode, bool extended, const std::string& name)
+    {
+        if (name.empty())
+            return;
+
+        for (ManualKeyName& manualName : g_manualKeyNames)
+        {
+            if (manualName.virtualKey == virtualKey &&
+                manualName.scanCode == scanCode &&
+                manualName.extended == extended)
+            {
+                manualName.name = name;
+                return;
+            }
+        }
+
+        g_manualKeyNames.push_back({ virtualKey, scanCode, extended, name });
+    }
+
     std::string KeyName(USHORT virtualKey, USHORT scanCode, USHORT flags)
     {
+        const bool extended = (flags & RI_KEY_E0) != 0;
+        if (const ManualKeyName* manualName = FindManualKeyName(virtualKey, scanCode, extended))
+            return manualName->name;
+
         wchar_t name[128]{};
         LONG lParam = static_cast<LONG>(scanCode) << 16;
-        if ((flags & RI_KEY_E0) != 0)
+        if (extended)
             lParam |= 1 << 24;
 
         if (GetKeyNameTextW(lParam, name, static_cast<int>(std::size(name))) > 0)
@@ -656,7 +715,7 @@ namespace
             return false;
         }
 
-        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '5', '\0' };
+        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '6', '\0' };
         out.write(magic, sizeof(magic));
 
         const double runtimeSeconds = NowSeconds();
@@ -674,6 +733,17 @@ namespace
             WriteValue(out, activity.activeSeconds);
             const double savedProgramLastInputSeconds = -1.0;
             WriteValue(out, savedProgramLastInputSeconds);
+        }
+
+        const uint32_t manualKeyNameCount = static_cast<uint32_t>(g_manualKeyNames.size());
+        WriteValue(out, manualKeyNameCount);
+        for (const ManualKeyName& manualName : g_manualKeyNames)
+        {
+            WriteValue(out, manualName.virtualKey);
+            WriteValue(out, manualName.scanCode);
+            const uint8_t extended = manualName.extended ? 1 : 0;
+            WriteValue(out, extended);
+            WriteString(out, manualName.name);
         }
 
         WriteValue(out, g_heatmapCellScale);
@@ -764,12 +834,14 @@ namespace
         const char expectedV3[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '3', '\0' };
         const char expectedV4[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '4', '\0' };
         const char expectedV5[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '5', '\0' };
+        const char expectedV6[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '6', '\0' };
         const bool isV1 = memcmp(magic, expectedV1, sizeof(expectedV1)) == 0;
         const bool isV2 = memcmp(magic, expectedV2, sizeof(expectedV2)) == 0;
         const bool isV3 = memcmp(magic, expectedV3, sizeof(expectedV3)) == 0;
         const bool isV4 = memcmp(magic, expectedV4, sizeof(expectedV4)) == 0;
         const bool isV5 = memcmp(magic, expectedV5, sizeof(expectedV5)) == 0;
-        if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5)
+        const bool isV6 = memcmp(magic, expectedV6, sizeof(expectedV6)) == 0;
+        if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5 && !isV6)
         {
             g_saveLoadStatus = "Load failed: invalid file format.";
             return false;
@@ -778,6 +850,7 @@ namespace
         std::vector<InputStats> loadedInputs;
         std::vector<MonitorHeatmap> loadedMonitors;
         std::vector<ProgramActivityStats> loadedProgramActivity;
+        std::vector<ManualKeyName> loadedManualKeyNames;
         POINT loadedMouseDelta{};
         int loadedWheelDelta = 0;
         int loadedLeftClicks = 0;
@@ -789,7 +862,7 @@ namespace
         double loadedGlobalActiveSeconds = 0.0;
         double loadedLastInputSeconds = -1.0;
 
-        if (isV4 || isV5)
+        if (isV4 || isV5 || isV6)
         {
             if (!ReadValue(in, loadedRuntimeSeconds))
             {
@@ -798,7 +871,7 @@ namespace
             }
         }
 
-        if (isV5)
+        if (isV5 || isV6)
         {
             if (!ReadValue(in, loadedGlobalActiveSeconds) ||
                 !ReadValue(in, loadedLastInputSeconds))
@@ -836,7 +909,36 @@ namespace
             }
         }
 
-        if (isV3 || isV4 || isV5)
+        if (isV6)
+        {
+            uint32_t manualKeyNameCount = 0;
+            if (!ReadValue(in, manualKeyNameCount) || manualKeyNameCount > 4096)
+            {
+                g_saveLoadStatus = "Load failed: invalid manual key name count.";
+                return false;
+            }
+
+            loadedManualKeyNames.reserve(manualKeyNameCount);
+            for (uint32_t keyIndex = 0; keyIndex < manualKeyNameCount; ++keyIndex)
+            {
+                ManualKeyName manualName;
+                uint8_t extended = 0;
+                if (!ReadValue(in, manualName.virtualKey) ||
+                    !ReadValue(in, manualName.scanCode) ||
+                    !ReadValue(in, extended) ||
+                    !ReadString(in, manualName.name))
+                {
+                    g_saveLoadStatus = "Load failed: invalid manual key name data.";
+                    return false;
+                }
+
+                manualName.extended = extended != 0;
+                if (!manualName.name.empty())
+                    loadedManualKeyNames.push_back(std::move(manualName));
+            }
+        }
+
+        if (isV3 || isV4 || isV5 || isV6)
         {
             if (!ReadValue(in, loadedHeatmapCellScale) ||
                 !ReadValue(in, loadedCursorHeatRadiusPixels))
@@ -908,7 +1010,7 @@ namespace
             loadedInputs.push_back(std::move(input));
         }
 
-        if (!isV4 && !isV5)
+        if (!isV4 && !isV5 && !isV6)
         {
             for (const InputStats& input : loadedInputs)
                 loadedRuntimeSeconds = std::max(loadedRuntimeSeconds, input.lastTimeSeconds);
@@ -951,7 +1053,7 @@ namespace
                 return false;
             }
 
-            if (isV3 || isV4 || isV5)
+            if (isV3 || isV4 || isV5 || isV6)
             {
                 if (!ReadValue(in, monitor.columns) ||
                     !ReadValue(in, monitor.rows) ||
@@ -986,7 +1088,7 @@ namespace
                 return false;
             }
 
-            if (isV2 || isV3 || isV4 || isV5)
+            if (isV2 || isV3 || isV4 || isV5 || isV6)
             {
                 uint32_t programHeatmapCount = 0;
                 if (!ReadValue(in, programHeatmapCount) || programHeatmapCount > 100000)
@@ -1025,6 +1127,7 @@ namespace
         g_inputs = std::move(loadedInputs);
         g_monitors = std::move(loadedMonitors);
         g_programActivity = std::move(loadedProgramActivity);
+        g_manualKeyNames = std::move(loadedManualKeyNames);
         g_mouseDelta = loadedMouseDelta;
         g_wheelDelta = loadedWheelDelta;
         g_leftClicks = loadedLeftClicks;
@@ -1095,6 +1198,7 @@ namespace
     {
         g_inputs.clear();
         g_programActivity.clear();
+        g_manualKeyNames.clear();
         g_selectedInputId.clear();
         g_keysDown.fill(false);
         g_activeCombosByKey.fill({});
@@ -1280,16 +1384,27 @@ namespace
     void HandleRawKeyboard(const RAWKEYBOARD& keyboard)
     {
         const USHORT virtualKey = keyboard.VKey;
+        const bool isUp = (keyboard.Flags & RI_KEY_BREAK) != 0;
+        const bool isDown = !isUp;
+        if (g_waitingForKeyRegistration && isDown)
+        {
+            g_capturedManualVirtualKey = virtualKey;
+            g_capturedManualScanCode = keyboard.MakeCode;
+            g_capturedManualExtended = (keyboard.Flags & RI_KEY_E0) != 0;
+            g_hasCapturedManualKey = true;
+            g_waitingForKeyRegistration = false;
+            g_manualKeyNameBuffer[0] = '\0';
+            return;
+        }
+
         if (virtualKey >= g_keysDown.size())
             return;
 
         const bool wasDown = g_keysDown[virtualKey];
-        const bool isUp = (keyboard.Flags & RI_KEY_BREAK) != 0;
-        const bool isDown = !isUp;
         g_keysDown[virtualKey] = isDown;
 
         const std::string key = KeyName(virtualKey, keyboard.MakeCode, keyboard.Flags);
-        const std::string id = "key:" + std::to_string(virtualKey);
+        const std::string id = KeyInputId(virtualKey);
         if (isDown && !wasDown)
             AddInputEvent(id, "Keyboard", key, "Down", "Scan " + std::to_string(keyboard.MakeCode));
         else if (isUp && wasDown)
@@ -1388,7 +1503,7 @@ namespace
 
     void HandleRawInput(HRAWINPUT hRawInput)
     {
-        if (!g_captureEnabled)
+        if (!g_captureEnabled && !g_waitingForKeyRegistration)
             return;
 
         UINT size = 0;
@@ -1403,7 +1518,7 @@ namespace
         const RAWINPUT* raw = reinterpret_cast<const RAWINPUT*>(buffer.data());
         if (raw->header.dwType == RIM_TYPEKEYBOARD)
             HandleRawKeyboard(raw->data.keyboard);
-        else if (raw->header.dwType == RIM_TYPEMOUSE)
+        else if (g_captureEnabled && raw->header.dwType == RIM_TYPEMOUSE)
             HandleRawMouse(raw->data.mouse);
     }
 
@@ -1792,6 +1907,96 @@ namespace
         ImGui::Text("File time: %s |", FormatDuration(NowSeconds()).c_str());
     }
 
+    void DrawRegisterKeyModal()
+    {
+        if (g_showRegisterKeyModal)
+        {
+            ImGui::OpenPopup("Register Key Code");
+            g_showRegisterKeyModal = false;
+        }
+
+        bool open = true;
+        if (!ImGui::BeginPopupModal("Register Key Code", &open, ImGuiWindowFlags_AlwaysAutoResize))
+            return;
+
+        if (g_waitingForKeyRegistration)
+        {
+            ImGui::TextUnformatted("Press the key to register.");
+            ImGui::TextUnformatted("The detection key press will not be added to input history.");
+            if (ImGui::Button("Cancel"))
+            {
+                g_waitingForKeyRegistration = false;
+                g_hasCapturedManualKey = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        else if (g_hasCapturedManualKey)
+        {
+            const USHORT flags = g_capturedManualExtended ? RI_KEY_E0 : 0;
+            const std::string detectedName = KeyName(g_capturedManualVirtualKey, g_capturedManualScanCode, flags);
+            ImGui::Text("Virtual key: 0x%02X", static_cast<unsigned int>(g_capturedManualVirtualKey));
+            ImGui::Text("Scan code: 0x%02X", static_cast<unsigned int>(g_capturedManualScanCode));
+            ImGui::Text("Extended: %s", g_capturedManualExtended ? "yes" : "no");
+            ImGui::Text("Detected name: %s", detectedName.c_str());
+            ImGui::InputText("Name", g_manualKeyNameBuffer, sizeof(g_manualKeyNameBuffer));
+
+            const bool canSave = g_manualKeyNameBuffer[0] != '\0';
+            if (!canSave)
+                ImGui::BeginDisabled();
+
+            if (ImGui::Button("Save"))
+            {
+                RegisterManualKeyName(
+                    g_capturedManualVirtualKey,
+                    g_capturedManualScanCode,
+                    g_capturedManualExtended,
+                    g_manualKeyNameBuffer);
+
+                const std::string id = KeyInputId(g_capturedManualVirtualKey);
+                for (InputStats& input : g_inputs)
+                {
+                    if (input.id == id)
+                        input.label = g_manualKeyNameBuffer;
+                }
+
+                g_saveLoadStatus = "Registered key name. It will persist with saved data.";
+                g_hasCapturedManualKey = false;
+                ImGui::CloseCurrentPopup();
+            }
+
+            if (!canSave)
+                ImGui::EndDisabled();
+
+            ImGui::SameLine();
+            if (ImGui::Button("Detect Again"))
+            {
+                g_waitingForKeyRegistration = true;
+                g_hasCapturedManualKey = false;
+                g_manualKeyNameBuffer[0] = '\0';
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel"))
+            {
+                g_hasCapturedManualKey = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        else
+        {
+            g_waitingForKeyRegistration = true;
+            ImGui::TextUnformatted("Press the key to register.");
+        }
+
+        if (!open)
+        {
+            g_waitingForKeyRegistration = false;
+            g_hasCapturedManualKey = false;
+        }
+
+        ImGui::EndPopup();
+    }
+
     void DrawToolbar()
     {
         if (ImGui::BeginMenuBar())
@@ -1823,6 +2028,13 @@ namespace
             if (ImGui::BeginMenu("Options"))
             {
                 ImGui::MenuItem("Capture input", nullptr, &g_captureEnabled);
+                if (ImGui::MenuItem("Register key code..."))
+                {
+                    g_showRegisterKeyModal = true;
+                    g_waitingForKeyRegistration = true;
+                    g_hasCapturedManualKey = false;
+                    g_manualKeyNameBuffer[0] = '\0';
+                }
                 if (ImGui::MenuItem("Clear data"))
                     ClearInputData();
                 if (ImGui::MenuItem("Minimize to tray"))
@@ -1835,11 +2047,11 @@ namespace
 
         if (!g_rawInputRegistered)
             ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "Raw Input registration failed.");
-        else
-            ImGui::TextColored(ImVec4(0.25f, 0.8f, 0.45f, 1.0f), "Raw Input is active. Events continue while unfocused or minimized.");
 
         if (!g_saveLoadStatus.empty())
             ImGui::TextUnformatted(g_saveLoadStatus.c_str());
+
+        DrawRegisterKeyModal();
     }
 
     void DrawOverviewStats()
