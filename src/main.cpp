@@ -146,6 +146,8 @@ namespace
     int g_leftClicks = 0;
     int g_rightClicks = 0;
     int g_middleClicks = 0;
+    int g_mouse4Clicks = 0;
+    int g_mouse5Clicks = 0;
     bool g_captureEnabled = true;
     bool g_rawInputRegistered = false;
     bool g_trayIconVisible = false;
@@ -881,7 +883,7 @@ namespace
             return false;
         }
 
-        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '8', '\0' };
+        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '9', '\0' };
         out.write(magic, sizeof(magic));
 
         if (g_saveStartUnixSeconds <= 0.0 || !std::isfinite(g_saveStartUnixSeconds))
@@ -935,6 +937,8 @@ namespace
         WriteValue(out, g_leftClicks);
         WriteValue(out, g_rightClicks);
         WriteValue(out, g_middleClicks);
+        WriteValue(out, g_mouse4Clicks);
+        WriteValue(out, g_mouse5Clicks);
 
         const uint32_t inputCount = static_cast<uint32_t>(g_inputs.size());
         WriteValue(out, inputCount);
@@ -1018,6 +1022,7 @@ namespace
         const char expectedV6[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '6', '\0' };
         const char expectedV7[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '7', '\0' };
         const char expectedV8[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '8', '\0' };
+        const char expectedV9[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '9', '\0' };
         const bool isV1 = memcmp(magic, expectedV1, sizeof(expectedV1)) == 0;
         const bool isV2 = memcmp(magic, expectedV2, sizeof(expectedV2)) == 0;
         const bool isV3 = memcmp(magic, expectedV3, sizeof(expectedV3)) == 0;
@@ -1026,7 +1031,8 @@ namespace
         const bool isV6 = memcmp(magic, expectedV6, sizeof(expectedV6)) == 0;
         const bool isV7 = memcmp(magic, expectedV7, sizeof(expectedV7)) == 0;
         const bool isV8 = memcmp(magic, expectedV8, sizeof(expectedV8)) == 0;
-        if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5 && !isV6 && !isV7 && !isV8)
+        const bool isV9 = memcmp(magic, expectedV9, sizeof(expectedV9)) == 0;
+        if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5 && !isV6 && !isV7 && !isV8 && !isV9)
         {
             g_saveLoadStatus = "Load failed: invalid file format.";
             return false;
@@ -1042,6 +1048,8 @@ namespace
         int loadedLeftClicks = 0;
         int loadedRightClicks = 0;
         int loadedMiddleClicks = 0;
+        int loadedMouse4Clicks = 0;
+        int loadedMouse5Clicks = 0;
         float loadedHeatmapCellScale = g_heatmapCellScale;
         int loadedCursorHeatRadiusPixels = g_cursorHeatRadiusPixels;
         double loadedRuntimeSeconds = 0.0;
@@ -1049,7 +1057,7 @@ namespace
         double loadedLastInputSeconds = -1.0;
         double loadedSaveStartUnixSeconds = 0.0;
 
-        if (isV4 || isV5 || isV6 || isV7 || isV8)
+        if (isV4 || isV5 || isV6 || isV7 || isV8 || isV9)
         {
             if (!ReadValue(in, loadedRuntimeSeconds))
             {
@@ -1058,13 +1066,13 @@ namespace
             }
         }
 
-        if ((isV7 || isV8) && !ReadValue(in, loadedSaveStartUnixSeconds))
+        if ((isV7 || isV8 || isV9) && !ReadValue(in, loadedSaveStartUnixSeconds))
         {
             g_saveLoadStatus = "Load failed: invalid save start data.";
             return false;
         }
 
-        if (isV5 || isV6 || isV7 || isV8)
+        if (isV5 || isV6 || isV7 || isV8 || isV9)
         {
             if (!ReadValue(in, loadedGlobalActiveSeconds) ||
                 !ReadValue(in, loadedLastInputSeconds))
@@ -1103,7 +1111,7 @@ namespace
             }
         }
 
-        if (isV6 || isV7 || isV8)
+        if (isV6 || isV7 || isV8 || isV9)
         {
             uint32_t manualKeyNameCount = 0;
             if (!ReadValue(in, manualKeyNameCount) || manualKeyNameCount > 4096)
@@ -1132,7 +1140,7 @@ namespace
             }
         }
 
-        if (isV8)
+        if (isV8 || isV9)
         {
             uint32_t cursorHeatSampleCount = 0;
             if (!ReadValue(in, cursorHeatSampleCount) || cursorHeatSampleCount > 500000)
@@ -1163,7 +1171,7 @@ namespace
             }
         }
 
-        if (isV3 || isV4 || isV5 || isV6 || isV7 || isV8)
+        if (isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9)
         {
             if (!ReadValue(in, loadedHeatmapCellScale) ||
                 !ReadValue(in, loadedCursorHeatRadiusPixels))
@@ -1182,6 +1190,16 @@ namespace
         {
             g_saveLoadStatus = "Load failed: truncated file.";
             return false;
+        }
+
+        if (isV9)
+        {
+            if (!ReadValue(in, loadedMouse4Clicks) ||
+                !ReadValue(in, loadedMouse5Clicks))
+            {
+                g_saveLoadStatus = "Load failed: invalid extra mouse button data.";
+                return false;
+            }
         }
 
         uint32_t inputCount = 0;
@@ -1241,13 +1259,13 @@ namespace
             loadedInputs.push_back(std::move(input));
         }
 
-        if (!isV4 && !isV5 && !isV6 && !isV7 && !isV8)
+        if (!isV4 && !isV5 && !isV6 && !isV7 && !isV8 && !isV9)
         {
             for (const InputStats& input : loadedInputs)
                 loadedRuntimeSeconds = std::max(loadedRuntimeSeconds, input.lastTimeSeconds);
         }
 
-        if (!isV5 && !isV6 && !isV7 && !isV8)
+        if (!isV5 && !isV6 && !isV7 && !isV8 && !isV9)
         {
             loadedGlobalActiveSeconds = loadedRuntimeSeconds;
             for (const InputStats& input : loadedInputs)
@@ -1284,7 +1302,7 @@ namespace
                 return false;
             }
 
-            if (isV3 || isV4 || isV5 || isV6 || isV7 || isV8)
+            if (isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9)
             {
                 if (!ReadValue(in, monitor.columns) ||
                     !ReadValue(in, monitor.rows) ||
@@ -1319,7 +1337,7 @@ namespace
                 return false;
             }
 
-            if (isV2 || isV3 || isV4 || isV5 || isV6 || isV7 || isV8)
+            if (isV2 || isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9)
             {
                 uint32_t programHeatmapCount = 0;
                 if (!ReadValue(in, programHeatmapCount) || programHeatmapCount > 100000)
@@ -1363,13 +1381,15 @@ namespace
         g_programActivity = std::move(loadedProgramActivity);
         g_manualKeyNames = std::move(loadedManualKeyNames);
         g_cursorHeatSamples = std::move(loadedCursorHeatSamples);
-        if (isV8)
+        if (isV8 || isV9)
             RebuildHeatmapsFromSamples();
         g_mouseDelta = loadedMouseDelta;
         g_wheelDelta = loadedWheelDelta;
         g_leftClicks = loadedLeftClicks;
         g_rightClicks = loadedRightClicks;
         g_middleClicks = loadedMiddleClicks;
+        g_mouse4Clicks = loadedMouse4Clicks;
+        g_mouse5Clicks = loadedMouse5Clicks;
         g_heatmapCellScale = std::clamp(loadedHeatmapCellScale, 0.005f, 0.08f);
         g_cursorHeatRadiusPixels = std::clamp(loadedCursorHeatRadiusPixels, 0, 250);
         g_loadedRuntimeSeconds = std::max(0.0, loadedRuntimeSeconds);
@@ -1456,6 +1476,8 @@ namespace
         g_leftClicks = 0;
         g_rightClicks = 0;
         g_middleClicks = 0;
+        g_mouse4Clicks = 0;
+        g_mouse5Clicks = 0;
         g_loadedRuntimeSeconds = 0.0;
         g_globalActiveSeconds = 0.0;
         g_lastInputSeconds = -1.0;
@@ -1736,6 +1758,8 @@ namespace
         HandleMouseButton(flags, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, "Left", &g_leftClicks);
         HandleMouseButton(flags, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP, "Right", &g_rightClicks);
         HandleMouseButton(flags, RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP, "Middle", &g_middleClicks);
+        HandleMouseButton(flags, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP, "Mouse4", &g_mouse4Clicks);
+        HandleMouseButton(flags, RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_UP, "Mouse5", &g_mouse5Clicks);
 
         if ((flags & RI_MOUSE_WHEEL) != 0)
         {
@@ -2007,7 +2031,11 @@ namespace
     bool IsMouseClickInput(const InputStats& input)
     {
         return input.device == "Mouse" &&
-            (input.id == "mouse:Left" || input.id == "mouse:Right" || input.id == "mouse:Middle");
+            (input.id == "mouse:Left" ||
+                input.id == "mouse:Right" ||
+                input.id == "mouse:Middle" ||
+                input.id == "mouse:Mouse4" ||
+                input.id == "mouse:Mouse5");
     }
 
     bool IsUnnamedKeyboardInput(const InputStats& input)
@@ -2352,7 +2380,12 @@ namespace
         ImGui::Text("Total input invocations: %llu", static_cast<unsigned long long>(TotalInvocations()));
         ImGui::Text("Mouse delta total: x %ld, y %ld", g_mouseDelta.x, g_mouseDelta.y);
         ImGui::Text("Wheel total: %d", g_wheelDelta);
-        ImGui::Text("Clicks: left %d, right %d, middle %d", g_leftClicks, g_rightClicks, g_middleClicks);
+        ImGui::Text("Clicks: left %d, right %d, middle %d, mouse4 %d, mouse5 %d",
+            g_leftClicks,
+            g_rightClicks,
+            g_middleClicks,
+            g_mouse4Clicks,
+            g_mouse5Clicks);
     }
 
     struct ProgramFilterOption
@@ -3163,7 +3196,12 @@ namespace
         {
             ImGui::Text("Mouse delta total: x %ld, y %ld", g_mouseDelta.x, g_mouseDelta.y);
             ImGui::Text("Wheel total: %d", g_wheelDelta);
-            ImGui::Text("Clicks: left %d, right %d, middle %d", g_leftClicks, g_rightClicks, g_middleClicks);
+            ImGui::Text("Clicks: left %d, right %d, middle %d, mouse4 %d, mouse5 %d",
+                g_leftClicks,
+                g_rightClicks,
+                g_middleClicks,
+                g_mouse4Clicks,
+                g_mouse5Clicks);
             ImGui::Text("Tracked mouse inputs: %d", TrackedInputs("Mouse"));
             DrawProgramFilterControl("Program Filter##mouse-delta");
             ImGui::Spacing();
