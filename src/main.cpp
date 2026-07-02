@@ -2034,6 +2034,25 @@ namespace
         return std::max(activity->activeSeconds / 60.0, 1.0 / 60.0);
     }
 
+    double ProgramActiveSeconds(const std::string& appName, DWORD processId)
+    {
+        const ProgramActivityStats* activity = FindProgramActivity(appName, processId);
+        return activity ? std::max(0.0, activity->activeSeconds) : 0.0;
+    }
+
+    double SaveAgeSeconds()
+    {
+        if (g_saveStartUnixSeconds > 0.0 && std::isfinite(g_saveStartUnixSeconds))
+            return std::max(1.0, CurrentUnixSeconds() - g_saveStartUnixSeconds);
+
+        return std::max(1.0, NowSeconds());
+    }
+
+    double Per24Hours(double seconds)
+    {
+        return seconds / std::max(SaveAgeSeconds() / (24.0 * 60.0 * 60.0), 1.0 / (24.0 * 60.0 * 60.0));
+    }
+
     double PerMinute(uint64_t count)
     {
         return static_cast<double>(count) / GlobalActiveMinutes();
@@ -3149,6 +3168,7 @@ namespace
         uint64_t keyRateCount = 0;
         uint64_t comboRateCount = 0;
         uint64_t clickRateCount = 0;
+        double activeSeconds = 0.0;
     };
 
     void DrawProgramTab()
@@ -3214,6 +3234,9 @@ namespace
             }
         }
 
+        for (ProgramTotals& program : programs)
+            program.activeSeconds = ProgramActiveSeconds(program.appName, program.processId);
+
         constexpr ImGuiTableFlags tableFlags =
             ImGuiTableFlags_Borders |
             ImGuiTableFlags_RowBg |
@@ -3226,7 +3249,7 @@ namespace
             ImGui::Text("Focused programs tracked: %d", static_cast<int>(programs.size()));
             ImGui::Separator();
 
-            if (ImGui::BeginTable("program-summary", 8, tableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y)))
+            if (ImGui::BeginTable("program-summary", 10, tableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y)))
             {
                 ImGui::TableSetupColumn("Program");
                 ImGui::TableSetupColumn("PID");
@@ -3236,6 +3259,8 @@ namespace
                 ImGui::TableSetupColumn("Key/min");
                 ImGui::TableSetupColumn("Combo/min");
                 ImGui::TableSetupColumn("Click/min");
+                ImGui::TableSetupColumn("Focused");
+                ImGui::TableSetupColumn("Focus/24h");
                 ImGui::TableHeadersRow();
 
                 const ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs();
@@ -3255,6 +3280,8 @@ namespace
                     PerMinuteForProgram(b.comboRateCount, b.appName, b.processId);
                 case 7: return PerMinuteForProgram(a.clickRateCount, a.appName, a.processId) <
                     PerMinuteForProgram(b.clickRateCount, b.appName, b.processId);
+                case 8: return a.activeSeconds < b.activeSeconds;
+                case 9: return Per24Hours(a.activeSeconds) < Per24Hours(b.activeSeconds);
                 default: return a.total < b.total;
                 }
             });
@@ -3284,6 +3311,10 @@ namespace
                     ImGui::Text("%.2f", PerMinuteForProgram(program.comboRateCount, program.appName, program.processId));
                     ImGui::TableSetColumnIndex(7);
                     ImGui::Text("%.2f", PerMinuteForProgram(program.clickRateCount, program.appName, program.processId));
+                    ImGui::TableSetColumnIndex(8);
+                    ImGui::TextUnformatted(FormatDuration(program.activeSeconds).c_str());
+                    ImGui::TableSetColumnIndex(9);
+                    ImGui::TextUnformatted(FormatDuration(Per24Hours(program.activeSeconds)).c_str());
                 }
 
                 ImGui::EndTable();
@@ -3300,7 +3331,11 @@ namespace
                 return;
             }
 
+            const double selectedProgramActiveSeconds = ProgramActiveSeconds(g_selectedProgramName, g_selectedProgramPid);
             ImGui::Text("Inputs for: %s", g_selectedProgramName.c_str());
+            ImGui::Text("Focused: %s | Focus/24h: %s",
+                FormatDuration(selectedProgramActiveSeconds).c_str(),
+                FormatDuration(Per24Hours(selectedProgramActiveSeconds)).c_str());
             ImGui::Separator();
             if (ImGui::BeginTable("program-inputs", 6, tableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y)))
             {
