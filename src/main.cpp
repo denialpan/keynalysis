@@ -158,17 +158,32 @@ namespace
 
     bool IsCtrlDown()
     {
-        return g_keysDown[VK_CONTROL] || g_keysDown[VK_LCONTROL] || g_keysDown[VK_RCONTROL];
+        return g_keysDown[VK_CONTROL] ||
+            g_keysDown[VK_LCONTROL] ||
+            g_keysDown[VK_RCONTROL] ||
+            (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0;
     }
 
     bool IsAltDown()
     {
-        return g_keysDown[VK_MENU] || g_keysDown[VK_LMENU] || g_keysDown[VK_RMENU];
+        return g_keysDown[VK_MENU] ||
+            g_keysDown[VK_LMENU] ||
+            g_keysDown[VK_RMENU] ||
+            (GetAsyncKeyState(VK_MENU) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
     }
 
     bool IsShiftDown()
     {
-        return g_keysDown[VK_SHIFT] || g_keysDown[VK_LSHIFT] || g_keysDown[VK_RSHIFT];
+        return g_keysDown[VK_SHIFT] ||
+            g_keysDown[VK_LSHIFT] ||
+            g_keysDown[VK_RSHIFT] ||
+            (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
     }
 
     std::string ComboLabelForKey(const std::string& key)
@@ -361,6 +376,23 @@ namespace
     void AddComboEvent(const std::string& comboLabel, std::string action, std::string detail)
     {
         AddInputEvent("combo:" + comboLabel, "Keyboard Combo", comboLabel, std::move(action), std::move(detail));
+    }
+
+    void PollSystemCombos()
+    {
+        const bool altTabDown = IsAltDown() && (GetAsyncKeyState(VK_TAB) & 0x8000) != 0;
+        std::string& activeAltTab = g_activeCombosByKey[VK_TAB];
+
+        if (altTabDown && activeAltTab.empty())
+        {
+            activeAltTab = "Alt+Tab";
+            AddComboEvent(activeAltTab, "Down", "Polled system combo");
+        }
+        else if (!altTabDown && activeAltTab == "Alt+Tab")
+        {
+            AddComboEvent(activeAltTab, "Up", "Polled system combo released");
+            activeAltTab.clear();
+        }
     }
 
     void ClearInputData()
@@ -570,6 +602,15 @@ namespace
                 {
                     g_activeCombosByKey[virtualKey] = comboLabel;
                     AddComboEvent(comboLabel, "Down", "Primary key down: " + key);
+                }
+            }
+            else if (isDown && virtualKey == VK_TAB && g_activeCombosByKey[virtualKey].empty() && IsAltDown())
+            {
+                const std::string comboLabel = ComboLabelForKey(key);
+                if (!comboLabel.empty())
+                {
+                    g_activeCombosByKey[virtualKey] = comboLabel;
+                    AddComboEvent(comboLabel, "Down", "System key down: " + key);
                 }
             }
             else if (isUp && !g_activeCombosByKey[virtualKey].empty())
@@ -1935,6 +1976,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
         }
         if (done)
             break;
+
+        if (g_captureEnabled)
+            PollSystemCombos();
 
         if (IsIconic(hwnd))
         {
