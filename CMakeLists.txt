@@ -22,6 +22,7 @@ set(IMGUI_SOURCES
 
 add_executable(keynalysis WIN32
     src/main.cpp
+    src/app.rc
     ${IMGUI_SOURCES}
 )
 

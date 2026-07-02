@@ -1,6 +1,8 @@
 build/
 build-mingw/
 cmake-build-debug/
+build-release/
+build-release-mingw/
 .vs/
 out/
 *.user
