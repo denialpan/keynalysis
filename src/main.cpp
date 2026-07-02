@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <cmath>
 #include <fstream>
@@ -18,6 +19,7 @@
 #include "imgui_internal.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
+#include "resource.h"
 
 #pragma comment(lib, "d3d11.lib")
 
@@ -156,6 +158,7 @@ namespace
     double g_loadedRuntimeSeconds = 0.0;
     double g_globalActiveSeconds = 0.0;
     double g_lastInputSeconds = -1.0;
+    double g_saveStartUnixSeconds = 0.0;
     auto g_startTime = std::chrono::steady_clock::now();
 
     constexpr UINT WM_TRAYICON = WM_APP + 1;
@@ -169,6 +172,12 @@ namespace
     {
         using namespace std::chrono;
         return g_loadedRuntimeSeconds + duration<double>(steady_clock::now() - g_startTime).count();
+    }
+
+    double CurrentUnixSeconds()
+    {
+        using namespace std::chrono;
+        return duration<double>(system_clock::now().time_since_epoch()).count();
     }
 
     std::string WideToUtf8(const wchar_t* text)
@@ -715,11 +724,15 @@ namespace
             return false;
         }
 
-        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '6', '\0' };
+        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '7', '\0' };
         out.write(magic, sizeof(magic));
+
+        if (g_saveStartUnixSeconds <= 0.0 || !std::isfinite(g_saveStartUnixSeconds))
+            g_saveStartUnixSeconds = CurrentUnixSeconds();
 
         const double runtimeSeconds = NowSeconds();
         WriteValue(out, runtimeSeconds);
+        WriteValue(out, g_saveStartUnixSeconds);
         WriteValue(out, g_globalActiveSeconds + ActiveDeltaSeconds(g_lastInputSeconds, runtimeSeconds));
         const double savedLastInputSeconds = -1.0;
         WriteValue(out, savedLastInputSeconds);
@@ -835,13 +848,15 @@ namespace
         const char expectedV4[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '4', '\0' };
         const char expectedV5[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '5', '\0' };
         const char expectedV6[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '6', '\0' };
+        const char expectedV7[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '7', '\0' };
         const bool isV1 = memcmp(magic, expectedV1, sizeof(expectedV1)) == 0;
         const bool isV2 = memcmp(magic, expectedV2, sizeof(expectedV2)) == 0;
         const bool isV3 = memcmp(magic, expectedV3, sizeof(expectedV3)) == 0;
         const bool isV4 = memcmp(magic, expectedV4, sizeof(expectedV4)) == 0;
         const bool isV5 = memcmp(magic, expectedV5, sizeof(expectedV5)) == 0;
         const bool isV6 = memcmp(magic, expectedV6, sizeof(expectedV6)) == 0;
-        if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5 && !isV6)
+        const bool isV7 = memcmp(magic, expectedV7, sizeof(expectedV7)) == 0;
+        if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5 && !isV6 && !isV7)
         {
             g_saveLoadStatus = "Load failed: invalid file format.";
             return false;
@@ -861,8 +876,9 @@ namespace
         double loadedRuntimeSeconds = 0.0;
         double loadedGlobalActiveSeconds = 0.0;
         double loadedLastInputSeconds = -1.0;
+        double loadedSaveStartUnixSeconds = 0.0;
 
-        if (isV4 || isV5 || isV6)
+        if (isV4 || isV5 || isV6 || isV7)
         {
             if (!ReadValue(in, loadedRuntimeSeconds))
             {
@@ -871,7 +887,13 @@ namespace
             }
         }
 
-        if (isV5 || isV6)
+        if (isV7 && !ReadValue(in, loadedSaveStartUnixSeconds))
+        {
+            g_saveLoadStatus = "Load failed: invalid save start data.";
+            return false;
+        }
+
+        if (isV5 || isV6 || isV7)
         {
             if (!ReadValue(in, loadedGlobalActiveSeconds) ||
                 !ReadValue(in, loadedLastInputSeconds))
@@ -909,7 +931,7 @@ namespace
             }
         }
 
-        if (isV6)
+        if (isV6 || isV7)
         {
             uint32_t manualKeyNameCount = 0;
             if (!ReadValue(in, manualKeyNameCount) || manualKeyNameCount > 4096)
@@ -938,7 +960,7 @@ namespace
             }
         }
 
-        if (isV3 || isV4 || isV5 || isV6)
+        if (isV3 || isV4 || isV5 || isV6 || isV7)
         {
             if (!ReadValue(in, loadedHeatmapCellScale) ||
                 !ReadValue(in, loadedCursorHeatRadiusPixels))
@@ -1010,13 +1032,13 @@ namespace
             loadedInputs.push_back(std::move(input));
         }
 
-        if (!isV4 && !isV5 && !isV6)
+        if (!isV4 && !isV5 && !isV6 && !isV7)
         {
             for (const InputStats& input : loadedInputs)
                 loadedRuntimeSeconds = std::max(loadedRuntimeSeconds, input.lastTimeSeconds);
         }
 
-        if (!isV5)
+        if (!isV5 && !isV6 && !isV7)
         {
             loadedGlobalActiveSeconds = loadedRuntimeSeconds;
             for (const InputStats& input : loadedInputs)
@@ -1053,7 +1075,7 @@ namespace
                 return false;
             }
 
-            if (isV3 || isV4 || isV5 || isV6)
+            if (isV3 || isV4 || isV5 || isV6 || isV7)
             {
                 if (!ReadValue(in, monitor.columns) ||
                     !ReadValue(in, monitor.rows) ||
@@ -1088,7 +1110,7 @@ namespace
                 return false;
             }
 
-            if (isV2 || isV3 || isV4 || isV5 || isV6)
+            if (isV2 || isV3 || isV4 || isV5 || isV6 || isV7)
             {
                 uint32_t programHeatmapCount = 0;
                 if (!ReadValue(in, programHeatmapCount) || programHeatmapCount > 100000)
@@ -1140,6 +1162,10 @@ namespace
         g_lastInputSeconds = std::isfinite(loadedLastInputSeconds) && loadedLastInputSeconds <= g_loadedRuntimeSeconds
             ? loadedLastInputSeconds
             : -1.0;
+        if (std::isfinite(loadedSaveStartUnixSeconds) && loadedSaveStartUnixSeconds > 0.0)
+            g_saveStartUnixSeconds = loadedSaveStartUnixSeconds;
+        else
+            g_saveStartUnixSeconds = std::max(0.0, CurrentUnixSeconds() - g_loadedRuntimeSeconds);
         g_startTime = std::chrono::steady_clock::now();
         g_selectedInputId.clear();
         g_selectedProgramName.clear();
@@ -1326,7 +1352,9 @@ namespace
         nid.uID = TRAY_ICON_ID;
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+        nid.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_KEYNALYSIS));
+        if (!nid.hIcon)
+            nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
         wcscpy_s(nid.szTip, L"keynalysis");
         return nid;
     }
@@ -1774,6 +1802,11 @@ namespace
             (input.id == "mouse:Left" || input.id == "mouse:Right" || input.id == "mouse:Middle");
     }
 
+    bool IsUnnamedKeyboardInput(const InputStats& input)
+    {
+        return input.device == "Keyboard" && input.label.rfind("VK 0x", 0) == 0;
+    }
+
     double CurrentGlobalActiveSeconds()
     {
         return g_globalActiveSeconds + ActiveDeltaSeconds(g_lastInputSeconds, NowSeconds());
@@ -1883,6 +1916,23 @@ namespace
         return buffer;
     }
 
+    std::string FormatLocalTimestamp(double unixSeconds)
+    {
+        if (unixSeconds <= 0.0 || !std::isfinite(unixSeconds))
+            return "Unknown";
+
+        const std::time_t timestamp = static_cast<std::time_t>(unixSeconds);
+        std::tm localTime{};
+        if (localtime_s(&localTime, &timestamp) != 0)
+            return "Unknown";
+
+        char buffer[64]{};
+        if (std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &localTime) == 0)
+            return "Unknown";
+
+        return buffer;
+    }
+
     void DrawGlobalSummary()
     {
         ImGui::SeparatorText("Global Summary");
@@ -1895,16 +1945,22 @@ namespace
         ImGui::Text("Mouse: %llu |", static_cast<unsigned long long>(TotalInvocationsExactDevice("Mouse")));
         ImGui::SameLine();
         ImGui::Text("Programs: %d |", CountTrackedPrograms());
-        ImGui::SameLine();
-        ImGui::Text("Key/min: %.2f |", PerMinute(TotalDownExactDevice("Keyboard")));
-        ImGui::SameLine();
-        ImGui::Text("Combo/min: %.2f |", PerMinute(TotalDownExactDevice("Keyboard Combo")));
-        ImGui::SameLine();
-        ImGui::Text("Click/min: %.2f |", PerMinute(TotalMouseClicks()));
-        ImGui::SameLine();
-        ImGui::Text("Active time: %s |", FormatDuration(CurrentGlobalActiveSeconds()).c_str());
-        ImGui::SameLine();
-        ImGui::Text("File time: %s |", FormatDuration(NowSeconds()).c_str());
+    }
+
+    void DrawMoreMenu()
+    {
+        ImGui::Text("Total inputs: %llu", static_cast<unsigned long long>(TotalInvocations()));
+        ImGui::Text("Keyboard: %llu", static_cast<unsigned long long>(TotalInvocationsExactDevice("Keyboard")));
+        ImGui::Text("Combos: %llu", static_cast<unsigned long long>(TotalInvocationsExactDevice("Keyboard Combo")));
+        ImGui::Text("Mouse: %llu", static_cast<unsigned long long>(TotalInvocationsExactDevice("Mouse")));
+        ImGui::Text("Programs: %d", CountTrackedPrograms());
+        ImGui::Separator();
+        ImGui::Text("Key/min: %.2f", PerMinute(TotalDownExactDevice("Keyboard")));
+        ImGui::Text("Combo/min: %.2f", PerMinute(TotalDownExactDevice("Keyboard Combo")));
+        ImGui::Text("Click/min: %.2f", PerMinute(TotalMouseClicks()));
+        ImGui::Text("Active program time: %s", FormatDuration(CurrentGlobalActiveSeconds()).c_str());
+        ImGui::Text("File time: %s", FormatDuration(NowSeconds()).c_str());
+        ImGui::Text("Save started: %s", FormatLocalTimestamp(g_saveStartUnixSeconds).c_str());
     }
 
     void DrawRegisterKeyModal()
@@ -2035,10 +2091,14 @@ namespace
                     g_hasCapturedManualKey = false;
                     g_manualKeyNameBuffer[0] = '\0';
                 }
-                if (ImGui::MenuItem("Clear data"))
-                    ClearInputData();
                 if (ImGui::MenuItem("Minimize to tray"))
                     ShowWindow(g_hwnd, SW_MINIMIZE);
+                ImGui::EndMenu();
+            }
+
+            if (ImGui::BeginMenu("More"))
+            {
+                DrawMoreMenu();
                 ImGui::EndMenu();
             }
 
@@ -2533,6 +2593,8 @@ namespace
             for (const HistoryRow& row : rows)
             {
                 ImGui::TableNextRow();
+                if (IsUnnamedKeyboardInput(*row.input))
+                    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(110, 26, 32, 140));
                 ImGui::TableSetColumnIndex(0);
                 ImGui::Text("%.3f", row.event->timeSeconds);
                 ImGui::TableSetColumnIndex(1);
@@ -3121,7 +3183,7 @@ namespace
         ImGui::Begin("keynalysis", nullptr, windowFlags);
         ImGui::PopStyleVar(2);
 
-        ImGui::TextUnformatted("Keyboard and mouse input test process");
+        ImGui::TextUnformatted("\"record everything\"");
         ImGui::Separator();
         DrawToolbar();
         ImGui::Spacing();
@@ -3205,6 +3267,10 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 {
+    HICON appIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_KEYNALYSIS));
+    if (!appIcon)
+        appIcon = LoadIconW(nullptr, IDI_APPLICATION);
+
     WNDCLASSEXW wc{
         sizeof(WNDCLASSEXW),
         CS_CLASSDC,
@@ -3212,12 +3278,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
         0L,
         0L,
         hInstance,
-        nullptr,
+        appIcon,
         nullptr,
         nullptr,
         nullptr,
         L"keynalysisWindow",
-        nullptr
+        appIcon
     };
     RegisterClassExW(&wc);
 
@@ -3250,14 +3316,23 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    const bool loadedAppSettings = LoadAppSettings();
+    LoadAppSettings();
     io.IniFilename = g_imguiIniPath.c_str();
     RefreshMonitors();
     if (FileExists(g_imguiIniPath))
         DisableDefaultDockRebuilds();
 
-    if (loadedAppSettings && FileExists(g_dataFilePath))
+    if (FileExists(g_dataFilePath))
+    {
         LoadSnapshotFromFile(g_dataFilePath);
+    }
+    else
+    {
+        g_saveStartUnixSeconds = CurrentUnixSeconds();
+        const std::string createdPath = g_dataFilePath;
+        if (SaveSnapshotToFile(createdPath))
+            g_saveLoadStatus = "Created new save: " + createdPath;
+    }
 
     ImGui::StyleColorsDark();
     ImGui_ImplWin32_Init(hwnd);
