@@ -1192,37 +1192,47 @@ namespace
 
     void DrawToolbar()
     {
+        if (ImGui::BeginMenuBar())
+        {
+            if (ImGui::BeginMenu("File"))
+            {
+                if (ImGui::MenuItem("Save"))
+                    SaveSnapshotToFile(g_dataFilePath);
+                if (ImGui::MenuItem("Save As..."))
+                {
+                    const std::string path = ShowSnapshotFileDialog(true);
+                    if (!path.empty())
+                        SaveSnapshotToFile(path);
+                }
+                if (ImGui::MenuItem("Load..."))
+                {
+                    const std::string path = ShowSnapshotFileDialog(false);
+                    if (!path.empty())
+                        LoadSnapshotFromFile(path);
+                }
+                ImGui::Separator();
+                ImGui::MenuItem("Auto save", nullptr, &g_autoSaveEnabled);
+                ImGui::EndMenu();
+            }
+
+            if (ImGui::BeginMenu("Options"))
+            {
+                ImGui::MenuItem("Capture input", nullptr, &g_captureEnabled);
+                if (ImGui::MenuItem("Clear data"))
+                    ClearInputData();
+                if (ImGui::MenuItem("Minimize to tray"))
+                    ShowWindow(g_hwnd, SW_MINIMIZE);
+                ImGui::EndMenu();
+            }
+
+            ImGui::EndMenuBar();
+        }
+
         if (!g_rawInputRegistered)
             ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "Raw Input registration failed.");
         else
             ImGui::TextColored(ImVec4(0.25f, 0.8f, 0.45f, 1.0f), "Raw Input is active. Events continue while unfocused or minimized.");
 
-        ImGui::Checkbox("Capture input", &g_captureEnabled);
-        ImGui::SameLine();
-        if (ImGui::Button("Clear data"))
-            ClearInputData();
-        ImGui::SameLine();
-        if (ImGui::Button("Save"))
-            SaveSnapshotToFile(g_dataFilePath);
-        ImGui::SameLine();
-        if (ImGui::Button("Save As"))
-        {
-            const std::string path = ShowSnapshotFileDialog(true);
-            if (!path.empty())
-                SaveSnapshotToFile(path);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Load"))
-        {
-            const std::string path = ShowSnapshotFileDialog(false);
-            if (!path.empty())
-                LoadSnapshotFromFile(path);
-        }
-        ImGui::SameLine();
-        ImGui::Checkbox("Auto save", &g_autoSaveEnabled);
-        ImGui::SameLine();
-        if (ImGui::Button("Minimize"))
-            ShowWindow(g_hwnd, SW_MINIMIZE);
         if (!g_saveLoadStatus.empty())
             ImGui::TextUnformatted(g_saveLoadStatus.c_str());
     }
@@ -2143,7 +2153,8 @@ namespace
             ImGuiWindowFlags_NoMove |
             ImGuiWindowFlags_NoCollapse |
             ImGuiWindowFlags_NoBringToFrontOnFocus |
-            ImGuiWindowFlags_NoNavFocus;
+            ImGuiWindowFlags_NoNavFocus |
+            ImGuiWindowFlags_MenuBar;
 
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
