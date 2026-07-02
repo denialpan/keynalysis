@@ -91,6 +91,7 @@ namespace
     bool g_rebuildMouseDockLayout = true;
     bool g_rebuildProgramsDockLayout = true;
     std::array<bool, 256> g_keysDown{};
+    std::array<std::string, 256> g_activeCombosByKey{};
     std::deque<MouseDeltaSample> g_mouseDeltaSamples;
     POINT g_mouseDelta{};
     int g_wheelDelta = 0;
@@ -140,6 +141,51 @@ namespace
         char fallback[32]{};
         snprintf(fallback, sizeof(fallback), "VK 0x%02X", virtualKey);
         return fallback;
+    }
+
+    bool IsModifierKey(USHORT virtualKey)
+    {
+        return virtualKey == VK_CONTROL ||
+            virtualKey == VK_LCONTROL ||
+            virtualKey == VK_RCONTROL ||
+            virtualKey == VK_MENU ||
+            virtualKey == VK_LMENU ||
+            virtualKey == VK_RMENU ||
+            virtualKey == VK_SHIFT ||
+            virtualKey == VK_LSHIFT ||
+            virtualKey == VK_RSHIFT;
+    }
+
+    bool IsCtrlDown()
+    {
+        return g_keysDown[VK_CONTROL] || g_keysDown[VK_LCONTROL] || g_keysDown[VK_RCONTROL];
+    }
+
+    bool IsAltDown()
+    {
+        return g_keysDown[VK_MENU] || g_keysDown[VK_LMENU] || g_keysDown[VK_RMENU];
+    }
+
+    bool IsShiftDown()
+    {
+        return g_keysDown[VK_SHIFT] || g_keysDown[VK_LSHIFT] || g_keysDown[VK_RSHIFT];
+    }
+
+    std::string ComboLabelForKey(const std::string& key)
+    {
+        std::string label;
+        if (IsCtrlDown())
+            label += "Ctrl+";
+        if (IsAltDown())
+            label += "Alt+";
+        if (IsShiftDown())
+            label += "Shift+";
+
+        if (label.empty())
+            return {};
+
+        label += key;
+        return label;
     }
 
     std::string FileNameFromPath(const std::string& path)
@@ -312,11 +358,17 @@ namespace
             input.events.pop_back();
     }
 
+    void AddComboEvent(const std::string& comboLabel, std::string action, std::string detail)
+    {
+        AddInputEvent("combo:" + comboLabel, "Keyboard Combo", comboLabel, std::move(action), std::move(detail));
+    }
+
     void ClearInputData()
     {
         g_inputs.clear();
         g_selectedInputId.clear();
         g_keysDown.fill(false);
+        g_activeCombosByKey.fill({});
         g_mouseDeltaSamples.clear();
         for (MonitorHeatmap& monitor : g_monitors)
         {
@@ -508,6 +560,47 @@ namespace
             AddInputEvent(id, "Keyboard", key, "Down", "Scan " + std::to_string(keyboard.MakeCode));
         else if (isUp && wasDown)
             AddInputEvent(id, "Keyboard", key, "Up", "Scan " + std::to_string(keyboard.MakeCode));
+
+        if (!IsModifierKey(virtualKey))
+        {
+            if (isDown && !wasDown)
+            {
+                const std::string comboLabel = ComboLabelForKey(key);
+                if (!comboLabel.empty())
+                {
+                    g_activeCombosByKey[virtualKey] = comboLabel;
+                    AddComboEvent(comboLabel, "Down", "Primary key down: " + key);
+                }
+            }
+            else if (isUp && !g_activeCombosByKey[virtualKey].empty())
+            {
+                AddComboEvent(g_activeCombosByKey[virtualKey], "Up", "Primary key up: " + key);
+                g_activeCombosByKey[virtualKey].clear();
+            }
+        }
+        else if (isUp)
+        {
+            const bool ctrlReleased = (virtualKey == VK_CONTROL || virtualKey == VK_LCONTROL || virtualKey == VK_RCONTROL) && !IsCtrlDown();
+            const bool altReleased = (virtualKey == VK_MENU || virtualKey == VK_LMENU || virtualKey == VK_RMENU) && !IsAltDown();
+            const bool shiftReleased = (virtualKey == VK_SHIFT || virtualKey == VK_LSHIFT || virtualKey == VK_RSHIFT) && !IsShiftDown();
+
+            for (std::string& comboLabel : g_activeCombosByKey)
+            {
+                if (comboLabel.empty())
+                    continue;
+
+                const bool shouldRelease =
+                    (ctrlReleased && comboLabel.find("Ctrl+") != std::string::npos) ||
+                    (altReleased && comboLabel.find("Alt+") != std::string::npos) ||
+                    (shiftReleased && comboLabel.find("Shift+") != std::string::npos);
+
+                if (shouldRelease)
+                {
+                    AddComboEvent(comboLabel, "Up", "Modifier released: " + key);
+                    comboLabel.clear();
+                }
+            }
+        }
     }
 
     void HandleMouseButton(USHORT flags, USHORT downFlag, USHORT upFlag, const char* name, int* counter)
@@ -706,7 +799,14 @@ namespace
 
     bool MatchesDeviceFilter(const InputStats& input, const char* deviceFilter)
     {
-        return deviceFilter == nullptr || input.device == deviceFilter;
+        if (deviceFilter == nullptr)
+            return true;
+
+        const std::string filter(deviceFilter);
+        if (filter == "Keyboard")
+            return input.device == "Keyboard" || input.device == "Keyboard Combo";
+
+        return input.device == filter;
     }
 
     bool SortAscending(const ImGuiTableSortSpecs* sortSpecs)
@@ -1527,7 +1627,7 @@ namespace
                 }
 
                 totals->total += app.total;
-                if (input.device == "Keyboard")
+                if (input.device == "Keyboard" || input.device == "Keyboard Combo")
                     totals->keyboardTotal += app.total;
                 else if (input.device == "Mouse")
                     totals->mouseTotal += app.total;
