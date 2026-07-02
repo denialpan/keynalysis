@@ -2613,7 +2613,31 @@ namespace
         ImGui::Text("Last time: %.3f", selectedInput->lastTimeSeconds);
     }
 
-    void DrawKeyButton(const char* label, int virtualKey, float widthUnits = 1.0f, float heightUnits = 1.0f, const std::string& widgetSuffix = {})
+    uint64_t TotalKeyboardDiagramInputs()
+    {
+        uint64_t total = 0;
+        for (const InputStats& input : g_inputs)
+        {
+            if (input.device != "Keyboard")
+                continue;
+
+            if (g_visualFilterProgramName.empty())
+            {
+                total += input.total;
+                continue;
+            }
+
+            for (const AppInputStats& app : input.appTotals)
+            {
+                if (MatchesVisualProgramFilter(app.appName, app.processId))
+                    total += app.total;
+            }
+        }
+
+        return total;
+    }
+
+    void DrawKeyButton(const char* label, int virtualKey, uint64_t keyboardTotal, float widthUnits = 1.0f, float heightUnits = 1.0f, const std::string& widgetSuffix = {})
     {
         const float unitWidth = 42.0f;
         const float unitHeight = 34.0f;
@@ -2649,7 +2673,8 @@ namespace
         ImVec4 active = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
         if (displayTotal > 0)
         {
-            const float intensity = std::min(1.0f, static_cast<float>(displayTotal) / 25.0f);
+            const float percentage = keyboardTotal > 0 ? static_cast<float>(displayTotal) / static_cast<float>(keyboardTotal) : 0.0f;
+            const float intensity = std::clamp(percentage * 12.0f, 0.08f, 1.0f);
             base = ImVec4(0.18f + intensity * 0.25f, 0.32f + intensity * 0.25f, 0.50f + intensity * 0.18f, 1.0f);
             hovered = ImVec4(base.x + 0.08f, base.y + 0.08f, base.z + 0.08f, 1.0f);
             active = ImVec4(0.25f, 0.55f, 0.82f, 1.0f);
@@ -2678,7 +2703,15 @@ namespace
         ImGui::PopStyleColor(3);
 
         if (stats && ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s\nTotal: %llu\nDown: %llu\nUp: %llu", label, static_cast<unsigned long long>(displayTotal), static_cast<unsigned long long>(displayDown), static_cast<unsigned long long>(displayUp));
+        {
+            const double percent = keyboardTotal > 0 ? (static_cast<double>(displayTotal) * 100.0) / static_cast<double>(keyboardTotal) : 0.0;
+            ImGui::SetTooltip("%s\nTotal: %llu\nShare: %.2f%%\nDown: %llu\nUp: %llu",
+                label,
+                static_cast<unsigned long long>(displayTotal),
+                percent,
+                static_cast<unsigned long long>(displayDown),
+                static_cast<unsigned long long>(displayUp));
+        }
     }
 
     void DrawKeyGap(float units = 1.0f)
@@ -2694,9 +2727,10 @@ namespace
     void DrawKeyboardDiagram()
     {
         ImGui::TextUnformatted("100% QWERTY Layout");
-        ImGui::TextUnformatted("Blue intensity reflects total input count. Orange indicates currently down.");
+        ImGui::TextUnformatted("Blue intensity reflects each key's share of total keyboard input. Orange indicates currently down.");
         DrawProgramFilterControl("Program Filter##keyboard-diagram");
         ImGui::Separator();
+        const uint64_t keyboardTotal = TotalKeyboardDiagramInputs();
 
         ImGui::BeginChild("keyboard-diagram-scroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
 
@@ -2711,7 +2745,7 @@ namespace
             ImGui::SetCursorPos(ImVec2(start.x + col * stepX, start.y + row * stepY));
             char suffix[64]{};
             snprintf(suffix, sizeof(suffix), "%.2f:%.2f", col, row);
-            DrawKeyButton(label, vk, width, height, suffix);
+            DrawKeyButton(label, vk, keyboardTotal, width, height, suffix);
         };
 
         place(0.0f, 0.0f, "Esc", VK_ESCAPE);
