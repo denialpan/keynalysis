@@ -98,6 +98,15 @@ namespace
         uint32_t maxBin = 0;
     };
 
+    struct CursorHeatSample
+    {
+        double timeSeconds = 0.0;
+        LONG x = 0;
+        LONG y = 0;
+        std::string appName;
+        DWORD processId = 0;
+    };
+
     struct MonitorHeatmap
     {
         RECT rect{};
@@ -118,6 +127,7 @@ namespace
     std::vector<MonitorHeatmap> g_monitors;
     std::vector<ProgramActivityStats> g_programActivity;
     std::vector<ManualKeyName> g_manualKeyNames;
+    std::deque<CursorHeatSample> g_cursorHeatSamples;
     std::string g_selectedInputId;
     std::string g_selectedProgramName;
     DWORD g_selectedProgramPid = 0;
@@ -166,6 +176,7 @@ namespace
     constexpr int LEGACY_HEATMAP_COLUMNS = 48;
     constexpr int LEGACY_HEATMAP_ROWS = 27;
     constexpr int AUTO_SAVE_SECONDS = 5 * 60;
+    constexpr size_t MAX_CURSOR_HEAT_SAMPLES = 1000000;
     constexpr double AWAY_TIMEOUT_SECONDS = 5.0 * 60.0;
 
     double NowSeconds()
@@ -378,6 +389,7 @@ namespace
 
     void ClearHeatmapData()
     {
+        g_cursorHeatSamples.clear();
         for (MonitorHeatmap& monitor : g_monitors)
         {
             monitor.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
@@ -386,12 +398,15 @@ namespace
         }
     }
 
+    void RebuildHeatmapsFromSamples();
+
     void RefreshMonitors()
     {
         g_monitors.clear();
         EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, 0);
         if (g_selectedMonitorIndex >= static_cast<int>(g_monitors.size()))
             g_selectedMonitorIndex = 0;
+        RebuildHeatmapsFromSamples();
     }
 
     int FindMonitorIndexForPoint(const POINT& point)
@@ -408,21 +423,38 @@ namespace
 
     bool MatchesVisualProgramFilter(const std::string& appName, DWORD processId)
     {
-        return g_visualFilterProgramPid == 0 ||
-            (processId == g_visualFilterProgramPid && appName == g_visualFilterProgramName);
+        (void)processId;
+        return g_visualFilterProgramName.empty() ||
+            appName == g_visualFilterProgramName;
     }
 
     ProgramHeatmap& GetProgramHeatmap(MonitorHeatmap& monitor, const FocusContext& focus)
     {
         for (ProgramHeatmap& programHeatmap : monitor.programHeatmaps)
         {
-            if (programHeatmap.processId == focus.processId && programHeatmap.appName == focus.appName)
+            if (programHeatmap.appName == focus.appName)
                 return programHeatmap;
         }
 
         ProgramHeatmap programHeatmap;
         programHeatmap.appName = focus.appName;
         programHeatmap.processId = focus.processId;
+        programHeatmap.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
+        monitor.programHeatmaps.push_back(std::move(programHeatmap));
+        return monitor.programHeatmaps.back();
+    }
+
+    ProgramHeatmap& GetProgramHeatmap(MonitorHeatmap& monitor, const CursorHeatSample& sample)
+    {
+        for (ProgramHeatmap& programHeatmap : monitor.programHeatmaps)
+        {
+            if (programHeatmap.appName == sample.appName)
+                return programHeatmap;
+        }
+
+        ProgramHeatmap programHeatmap;
+        programHeatmap.appName = sample.appName;
+        programHeatmap.processId = sample.processId;
         programHeatmap.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
         monitor.programHeatmaps.push_back(std::move(programHeatmap));
         return monitor.programHeatmaps.back();
@@ -435,15 +467,19 @@ namespace
             g_mouseDeltaSamples.pop_front();
     }
 
-    void AddCursorHeatSample(const FocusContext& focus)
+    void ClearHeatmapBins()
     {
-        if (g_monitors.empty())
-            RefreshMonitors();
+        for (MonitorHeatmap& monitor : g_monitors)
+        {
+            monitor.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
+            monitor.maxBin = 0;
+            monitor.programHeatmaps.clear();
+        }
+    }
 
-        POINT cursor{};
-        if (!GetCursorPos(&cursor))
-            return;
-
+    void PaintCursorHeatSample(const CursorHeatSample& sample)
+    {
+        POINT cursor{ sample.x, sample.y };
         const int monitorIndex = FindMonitorIndexForPoint(cursor);
         if (monitorIndex < 0)
             return;
@@ -454,7 +490,7 @@ namespace
         const int height = static_cast<int>(std::max(1L, rect.bottom - rect.top));
         const int rawBinX = static_cast<int>((cursor.x - rect.left) * heatmap.columns / width);
         const int rawBinY = static_cast<int>((cursor.y - rect.top) * heatmap.rows / height);
-        ProgramHeatmap& programHeatmap = GetProgramHeatmap(heatmap, focus);
+        ProgramHeatmap& programHeatmap = GetProgramHeatmap(heatmap, sample);
         const int centerBinX = std::clamp(rawBinX, 0, heatmap.columns - 1);
         const int centerBinY = std::clamp(rawBinY, 0, heatmap.rows - 1);
         const float cellW = static_cast<float>(width) / static_cast<float>(std::max(1, heatmap.columns));
@@ -486,6 +522,37 @@ namespace
         }
     }
 
+    void RebuildHeatmapsFromSamples()
+    {
+        ClearHeatmapBins();
+        for (const CursorHeatSample& sample : g_cursorHeatSamples)
+            PaintCursorHeatSample(sample);
+    }
+
+    void AddCursorHeatSample(const FocusContext& focus)
+    {
+        if (g_monitors.empty())
+            RefreshMonitors();
+
+        POINT cursor{};
+        if (!GetCursorPos(&cursor))
+            return;
+
+        CursorHeatSample sample;
+        sample.timeSeconds = NowSeconds();
+        sample.x = cursor.x;
+        sample.y = cursor.y;
+        sample.appName = focus.appName;
+        sample.processId = focus.processId;
+        NormalizeProgramName(sample.appName, sample.processId);
+
+        g_cursorHeatSamples.push_back(std::move(sample));
+        while (g_cursorHeatSamples.size() > MAX_CURSOR_HEAT_SAMPLES)
+            g_cursorHeatSamples.pop_front();
+
+        PaintCursorHeatSample(g_cursorHeatSamples.back());
+    }
+
     InputStats& GetInputStats(const std::string& id, const std::string& device, const std::string& label)
     {
         for (InputStats& input : g_inputs)
@@ -513,7 +580,7 @@ namespace
     {
         for (AppInputStats& app : input.appTotals)
         {
-            if (app.processId == focus.processId && app.appName == focus.appName)
+            if (app.appName == focus.appName)
                 return app;
         }
 
@@ -521,11 +588,37 @@ namespace
         return input.appTotals.back();
     }
 
+    void MergeInputAppTotalsByName(InputStats& input)
+    {
+        std::vector<AppInputStats> merged;
+        for (const AppInputStats& app : input.appTotals)
+        {
+            auto it = std::find_if(merged.begin(), merged.end(), [&](const AppInputStats& existing) {
+                return existing.appName == app.appName;
+            });
+
+            if (it == merged.end())
+            {
+                merged.push_back(app);
+            }
+            else
+            {
+                it->total += app.total;
+                it->downTotal += app.downTotal;
+                it->upTotal += app.upTotal;
+                if (it->processId == 0)
+                    it->processId = app.processId;
+            }
+        }
+
+        input.appTotals = std::move(merged);
+    }
+
     ProgramActivityStats& GetProgramActivity(const FocusContext& focus)
     {
         for (ProgramActivityStats& activity : g_programActivity)
         {
-            if (activity.processId == focus.processId && activity.appName == focus.appName)
+            if (activity.appName == focus.appName)
                 return activity;
         }
 
@@ -535,13 +628,70 @@ namespace
 
     const ProgramActivityStats* FindProgramActivity(const std::string& appName, DWORD processId)
     {
+        (void)processId;
         for (const ProgramActivityStats& activity : g_programActivity)
         {
-            if (activity.processId == processId && activity.appName == appName)
+            if (activity.appName == appName)
                 return &activity;
         }
 
         return nullptr;
+    }
+
+    void MergeProgramActivityByName(std::vector<ProgramActivityStats>& activities)
+    {
+        std::vector<ProgramActivityStats> merged;
+        for (const ProgramActivityStats& activity : activities)
+        {
+            auto it = std::find_if(merged.begin(), merged.end(), [&](const ProgramActivityStats& existing) {
+                return existing.appName == activity.appName;
+            });
+
+            if (it == merged.end())
+            {
+                merged.push_back(activity);
+            }
+            else
+            {
+                it->activeSeconds += activity.activeSeconds;
+                it->lastInputSeconds = std::max(it->lastInputSeconds, activity.lastInputSeconds);
+                if (it->processId == 0)
+                    it->processId = activity.processId;
+            }
+        }
+
+        activities = std::move(merged);
+    }
+
+    void MergeProgramHeatmapsByName(MonitorHeatmap& monitor)
+    {
+        std::vector<ProgramHeatmap> merged;
+        for (const ProgramHeatmap& heatmap : monitor.programHeatmaps)
+        {
+            auto it = std::find_if(merged.begin(), merged.end(), [&](const ProgramHeatmap& existing) {
+                return existing.appName == heatmap.appName;
+            });
+
+            if (it == merged.end())
+            {
+                merged.push_back(heatmap);
+                continue;
+            }
+
+            if (it->bins.size() != heatmap.bins.size())
+                continue;
+
+            it->maxBin = 0;
+            for (size_t i = 0; i < it->bins.size(); ++i)
+            {
+                it->bins[i] += heatmap.bins[i];
+                it->maxBin = std::max(it->maxBin, it->bins[i]);
+            }
+            if (it->processId == 0)
+                it->processId = heatmap.processId;
+        }
+
+        monitor.programHeatmaps = std::move(merged);
     }
 
     double ActiveDeltaSeconds(double previousSeconds, double currentSeconds)
@@ -731,7 +881,7 @@ namespace
             return false;
         }
 
-        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '7', '\0' };
+        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '8', '\0' };
         out.write(magic, sizeof(magic));
 
         if (g_saveStartUnixSeconds <= 0.0 || !std::isfinite(g_saveStartUnixSeconds))
@@ -764,6 +914,17 @@ namespace
             const uint8_t extended = manualName.extended ? 1 : 0;
             WriteValue(out, extended);
             WriteString(out, manualName.name);
+        }
+
+        const uint32_t cursorHeatSampleCount = static_cast<uint32_t>(g_cursorHeatSamples.size());
+        WriteValue(out, cursorHeatSampleCount);
+        for (const CursorHeatSample& sample : g_cursorHeatSamples)
+        {
+            WriteValue(out, sample.timeSeconds);
+            WriteValue(out, sample.x);
+            WriteValue(out, sample.y);
+            WriteString(out, sample.appName);
+            WriteValue(out, sample.processId);
         }
 
         WriteValue(out, g_heatmapCellScale);
@@ -856,6 +1017,7 @@ namespace
         const char expectedV5[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '5', '\0' };
         const char expectedV6[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '6', '\0' };
         const char expectedV7[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '7', '\0' };
+        const char expectedV8[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '8', '\0' };
         const bool isV1 = memcmp(magic, expectedV1, sizeof(expectedV1)) == 0;
         const bool isV2 = memcmp(magic, expectedV2, sizeof(expectedV2)) == 0;
         const bool isV3 = memcmp(magic, expectedV3, sizeof(expectedV3)) == 0;
@@ -863,7 +1025,8 @@ namespace
         const bool isV5 = memcmp(magic, expectedV5, sizeof(expectedV5)) == 0;
         const bool isV6 = memcmp(magic, expectedV6, sizeof(expectedV6)) == 0;
         const bool isV7 = memcmp(magic, expectedV7, sizeof(expectedV7)) == 0;
-        if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5 && !isV6 && !isV7)
+        const bool isV8 = memcmp(magic, expectedV8, sizeof(expectedV8)) == 0;
+        if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5 && !isV6 && !isV7 && !isV8)
         {
             g_saveLoadStatus = "Load failed: invalid file format.";
             return false;
@@ -873,6 +1036,7 @@ namespace
         std::vector<MonitorHeatmap> loadedMonitors;
         std::vector<ProgramActivityStats> loadedProgramActivity;
         std::vector<ManualKeyName> loadedManualKeyNames;
+        std::deque<CursorHeatSample> loadedCursorHeatSamples;
         POINT loadedMouseDelta{};
         int loadedWheelDelta = 0;
         int loadedLeftClicks = 0;
@@ -885,7 +1049,7 @@ namespace
         double loadedLastInputSeconds = -1.0;
         double loadedSaveStartUnixSeconds = 0.0;
 
-        if (isV4 || isV5 || isV6 || isV7)
+        if (isV4 || isV5 || isV6 || isV7 || isV8)
         {
             if (!ReadValue(in, loadedRuntimeSeconds))
             {
@@ -894,13 +1058,13 @@ namespace
             }
         }
 
-        if (isV7 && !ReadValue(in, loadedSaveStartUnixSeconds))
+        if ((isV7 || isV8) && !ReadValue(in, loadedSaveStartUnixSeconds))
         {
             g_saveLoadStatus = "Load failed: invalid save start data.";
             return false;
         }
 
-        if (isV5 || isV6 || isV7)
+        if (isV5 || isV6 || isV7 || isV8)
         {
             if (!ReadValue(in, loadedGlobalActiveSeconds) ||
                 !ReadValue(in, loadedLastInputSeconds))
@@ -939,7 +1103,7 @@ namespace
             }
         }
 
-        if (isV6 || isV7)
+        if (isV6 || isV7 || isV8)
         {
             uint32_t manualKeyNameCount = 0;
             if (!ReadValue(in, manualKeyNameCount) || manualKeyNameCount > 4096)
@@ -968,7 +1132,38 @@ namespace
             }
         }
 
-        if (isV3 || isV4 || isV5 || isV6 || isV7)
+        if (isV8)
+        {
+            uint32_t cursorHeatSampleCount = 0;
+            if (!ReadValue(in, cursorHeatSampleCount) || cursorHeatSampleCount > 500000)
+            {
+                g_saveLoadStatus = "Load failed: invalid cursor heat sample count.";
+                return false;
+            }
+
+            for (uint32_t sampleIndex = 0; sampleIndex < cursorHeatSampleCount; ++sampleIndex)
+            {
+                CursorHeatSample sample;
+                if (!ReadValue(in, sample.timeSeconds) ||
+                    !ReadValue(in, sample.x) ||
+                    !ReadValue(in, sample.y) ||
+                    !ReadString(in, sample.appName) ||
+                    !ReadValue(in, sample.processId))
+                {
+                    g_saveLoadStatus = "Load failed: invalid cursor heat sample data.";
+                    return false;
+                }
+
+                if (!std::isfinite(sample.timeSeconds))
+                    sample.timeSeconds = 0.0;
+                NormalizeProgramName(sample.appName, sample.processId);
+                loadedCursorHeatSamples.push_back(std::move(sample));
+                while (loadedCursorHeatSamples.size() > MAX_CURSOR_HEAT_SAMPLES)
+                    loadedCursorHeatSamples.pop_front();
+            }
+        }
+
+        if (isV3 || isV4 || isV5 || isV6 || isV7 || isV8)
         {
             if (!ReadValue(in, loadedHeatmapCellScale) ||
                 !ReadValue(in, loadedCursorHeatRadiusPixels))
@@ -1041,17 +1236,18 @@ namespace
             NormalizeProgramName(input.lastAppName, input.lastAppName == "Other" ? 0 : 1);
             for (InputEvent& event : input.events)
                 NormalizeProgramName(event.appName, event.processId);
+            MergeInputAppTotalsByName(input);
 
             loadedInputs.push_back(std::move(input));
         }
 
-        if (!isV4 && !isV5 && !isV6 && !isV7)
+        if (!isV4 && !isV5 && !isV6 && !isV7 && !isV8)
         {
             for (const InputStats& input : loadedInputs)
                 loadedRuntimeSeconds = std::max(loadedRuntimeSeconds, input.lastTimeSeconds);
         }
 
-        if (!isV5 && !isV6 && !isV7)
+        if (!isV5 && !isV6 && !isV7 && !isV8)
         {
             loadedGlobalActiveSeconds = loadedRuntimeSeconds;
             for (const InputStats& input : loadedInputs)
@@ -1059,7 +1255,7 @@ namespace
                 for (const AppInputStats& app : input.appTotals)
                 {
                     const bool exists = std::any_of(loadedProgramActivity.begin(), loadedProgramActivity.end(), [&](const ProgramActivityStats& activity) {
-                        return activity.processId == app.processId && activity.appName == app.appName;
+                        return activity.appName == app.appName;
                     });
                     if (!exists)
                         loadedProgramActivity.push_back({ app.appName, app.processId, loadedRuntimeSeconds, -1.0 });
@@ -1088,7 +1284,7 @@ namespace
                 return false;
             }
 
-            if (isV3 || isV4 || isV5 || isV6 || isV7)
+            if (isV3 || isV4 || isV5 || isV6 || isV7 || isV8)
             {
                 if (!ReadValue(in, monitor.columns) ||
                     !ReadValue(in, monitor.rows) ||
@@ -1123,7 +1319,7 @@ namespace
                 return false;
             }
 
-            if (isV2 || isV3 || isV4 || isV5 || isV6 || isV7)
+            if (isV2 || isV3 || isV4 || isV5 || isV6 || isV7 || isV8)
             {
                 uint32_t programHeatmapCount = 0;
                 if (!ReadValue(in, programHeatmapCount) || programHeatmapCount > 100000)
@@ -1157,13 +1353,18 @@ namespace
                 }
             }
 
+            MergeProgramHeatmapsByName(monitor);
             loadedMonitors.push_back(std::move(monitor));
         }
 
+        MergeProgramActivityByName(loadedProgramActivity);
         g_inputs = std::move(loadedInputs);
         g_monitors = std::move(loadedMonitors);
         g_programActivity = std::move(loadedProgramActivity);
         g_manualKeyNames = std::move(loadedManualKeyNames);
+        g_cursorHeatSamples = std::move(loadedCursorHeatSamples);
+        if (isV8)
+            RebuildHeatmapsFromSamples();
         g_mouseDelta = loadedMouseDelta;
         g_wheelDelta = loadedWheelDelta;
         g_leftClicks = loadedLeftClicks;
@@ -1239,6 +1440,7 @@ namespace
         g_inputs.clear();
         g_programActivity.clear();
         g_manualKeyNames.clear();
+        g_cursorHeatSamples.clear();
         g_selectedInputId.clear();
         g_keysDown.fill(false);
         g_activeCombosByKey.fill({});
@@ -1686,7 +1888,7 @@ namespace
         const MonitorHeatmap& heatmap = g_monitors[g_selectedMonitorIndex];
         const std::vector<uint32_t>* bins = &heatmap.bins;
         uint32_t maxBin = heatmap.maxBin;
-        if (g_visualFilterProgramPid != 0)
+        if (!g_visualFilterProgramName.empty())
         {
             bins = nullptr;
             maxBin = 0;
@@ -1728,19 +1930,11 @@ namespace
             }
         }
 
-        for (int x = 1; x < columns; ++x)
-        {
-            const float gx = origin.x + x * cellW;
-            drawList->AddLine(ImVec2(gx, origin.y), ImVec2(gx, end.y), IM_COL32(45, 50, 58, 75));
-        }
-        for (int y = 1; y < rows; ++y)
-        {
-            const float gy = origin.y + y * cellH;
-            drawList->AddLine(ImVec2(origin.x, gy), ImVec2(end.x, gy), IM_COL32(45, 50, 58, 75));
-        }
-
         char label[128]{};
-        snprintf(label, sizeof(label), "max cell: %u", maxBin);
+        snprintf(label, sizeof(label), "samples: %llu / %llu  max cell: %u",
+            static_cast<unsigned long long>(g_cursorHeatSamples.size()),
+            static_cast<unsigned long long>(MAX_CURSOR_HEAT_SAMPLES),
+            maxBin);
         drawList->AddText(ImVec2(origin.x + 8.0f, origin.y + 8.0f), IM_COL32(220, 224, 230, 255), label);
     }
 
@@ -1904,7 +2098,7 @@ namespace
             for (const AppInputStats& app : input.appTotals)
             {
                 const bool exists = std::any_of(programs.begin(), programs.end(), [&](const TrackedProgram& program) {
-                    return program.processId == app.processId && program.appName == app.appName;
+                    return program.appName == app.appName;
                 });
                 if (!exists)
                     programs.push_back({ app.appName, app.processId });
@@ -2156,7 +2350,7 @@ namespace
             for (const AppInputStats& app : input.appTotals)
             {
                 const bool exists = std::any_of(options.begin(), options.end(), [&](const ProgramFilterOption& option) {
-                    return option.processId == app.processId && option.appName == app.appName;
+                    return option.appName == app.appName;
                 });
 
                 if (!exists)
@@ -2175,13 +2369,13 @@ namespace
     void DrawProgramFilterControl(const char* label)
     {
         std::string preview = "All programs";
-        if (g_visualFilterProgramPid != 0)
-            preview = g_visualFilterProgramName + " (" + std::to_string(g_visualFilterProgramPid) + ")";
+        if (!g_visualFilterProgramName.empty())
+            preview = g_visualFilterProgramName;
 
         ImGui::SetNextItemWidth(280.0f);
         if (ImGui::BeginCombo(label, preview.c_str()))
         {
-            const bool allSelected = g_visualFilterProgramPid == 0;
+            const bool allSelected = g_visualFilterProgramName.empty();
             if (ImGui::Selectable("All programs", allSelected))
             {
                 g_visualFilterProgramPid = 0;
@@ -2192,8 +2386,8 @@ namespace
 
             for (const ProgramFilterOption& option : BuildProgramFilterOptions())
             {
-                const bool selected = option.processId == g_visualFilterProgramPid && option.appName == g_visualFilterProgramName;
-                const std::string item = option.appName + " (" + std::to_string(option.processId) + ")";
+                const bool selected = option.appName == g_visualFilterProgramName;
+                const std::string item = option.appName;
                 if (ImGui::Selectable(item.c_str(), selected))
                 {
                     g_visualFilterProgramPid = option.processId;
@@ -2415,7 +2609,7 @@ namespace
         uint64_t displayTotal = stats ? stats->total : 0;
         uint64_t displayDown = stats ? stats->downTotal : 0;
         uint64_t displayUp = stats ? stats->upTotal : 0;
-        if (stats && g_visualFilterProgramPid != 0)
+        if (stats && !g_visualFilterProgramName.empty())
         {
             displayTotal = 0;
             displayDown = 0;
@@ -2992,7 +3186,7 @@ namespace
                 ProgramTotals* totals = nullptr;
                 for (ProgramTotals& program : programs)
                 {
-                    if (program.processId == app.processId && program.appName == app.appName)
+                    if (program.appName == app.appName)
                     {
                         totals = &program;
                         break;
@@ -3069,7 +3263,7 @@ namespace
                 {
                     ImGui::TableNextRow();
                     ImGui::TableSetColumnIndex(0);
-                    const bool selected = program.processId == g_selectedProgramPid && program.appName == g_selectedProgramName;
+                    const bool selected = program.appName == g_selectedProgramName;
                     const std::string selectableLabel = program.appName + "##program:" + std::to_string(program.processId);
                     if (ImGui::Selectable(selectableLabel.c_str(), selected, ImGuiSelectableFlags_SpanAllColumns))
                     {
@@ -3099,14 +3293,14 @@ namespace
 
         if (ImGui::Begin("Programs / Selected Inputs"))
         {
-            if (g_selectedProgramPid == 0 && g_selectedProgramName.empty())
+            if (g_selectedProgramName.empty())
             {
                 ImGui::TextUnformatted("Select a program row to view inputs recorded while it was focused.");
                 ImGui::End();
                 return;
             }
 
-            ImGui::Text("Inputs for: %s (%lu)", g_selectedProgramName.c_str(), static_cast<unsigned long>(g_selectedProgramPid));
+            ImGui::Text("Inputs for: %s", g_selectedProgramName.c_str());
             ImGui::Separator();
             if (ImGui::BeginTable("program-inputs", 6, tableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y)))
             {
@@ -3129,7 +3323,7 @@ namespace
                 {
                     for (const AppInputStats& app : input.appTotals)
                     {
-                        if (app.processId == g_selectedProgramPid && app.appName == g_selectedProgramName)
+                        if (app.appName == g_selectedProgramName)
                             rows.push_back({ &input, &app });
                     }
                 }
