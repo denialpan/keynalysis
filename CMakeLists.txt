@@ -42,6 +42,7 @@ target_link_libraries(keynalysis PRIVATE
     dxgi
     dwmapi
     shell32
+    comdlg32
 )
 
 if(MINGW)

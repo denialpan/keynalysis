@@ -1,13 +1,16 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <commdlg.h>
 #include <d3d11.h>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <cmath>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -101,12 +104,17 @@ namespace
     bool g_captureEnabled = true;
     bool g_rawInputRegistered = false;
     bool g_trayIconVisible = false;
+    bool g_autoSaveEnabled = true;
+    std::string g_dataFilePath = "keynalysis_autosave.kna";
+    std::string g_saveLoadStatus;
+    auto g_lastAutoSaveTime = std::chrono::steady_clock::now();
     auto g_startTime = std::chrono::steady_clock::now();
 
     constexpr UINT WM_TRAYICON = WM_APP + 1;
     constexpr UINT TRAY_ICON_ID = 1;
     constexpr int HEATMAP_COLUMNS = 48;
     constexpr int HEATMAP_ROWS = 27;
+    constexpr int AUTO_SAVE_SECONDS = 5 * 60;
 
     double NowSeconds()
     {
@@ -393,6 +401,296 @@ namespace
             AddComboEvent(activeAltTab, "Up", "Polled system combo released");
             activeAltTab.clear();
         }
+    }
+
+    template <typename T>
+    bool WriteValue(std::ofstream& out, const T& value)
+    {
+        out.write(reinterpret_cast<const char*>(&value), sizeof(T));
+        return out.good();
+    }
+
+    template <typename T>
+    bool ReadValue(std::ifstream& in, T& value)
+    {
+        in.read(reinterpret_cast<char*>(&value), sizeof(T));
+        return in.good();
+    }
+
+    bool WriteString(std::ofstream& out, const std::string& value)
+    {
+        const uint32_t size = static_cast<uint32_t>(value.size());
+        if (!WriteValue(out, size))
+            return false;
+
+        if (size > 0)
+            out.write(value.data(), size);
+
+        return out.good();
+    }
+
+    bool ReadString(std::ifstream& in, std::string& value)
+    {
+        uint32_t size = 0;
+        if (!ReadValue(in, size))
+            return false;
+
+        if (size > 1024 * 1024)
+            return false;
+
+        value.assign(size, '\0');
+        if (size > 0)
+            in.read(value.data(), size);
+
+        return in.good();
+    }
+
+    bool SaveSnapshotToFile(const std::string& path)
+    {
+        std::ofstream out(path, std::ios::binary);
+        if (!out)
+        {
+            g_saveLoadStatus = "Save failed: unable to open file.";
+            return false;
+        }
+
+        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '1', '\0' };
+        out.write(magic, sizeof(magic));
+
+        WriteValue(out, g_mouseDelta.x);
+        WriteValue(out, g_mouseDelta.y);
+        WriteValue(out, g_wheelDelta);
+        WriteValue(out, g_leftClicks);
+        WriteValue(out, g_rightClicks);
+        WriteValue(out, g_middleClicks);
+
+        const uint32_t inputCount = static_cast<uint32_t>(g_inputs.size());
+        WriteValue(out, inputCount);
+        for (const InputStats& input : g_inputs)
+        {
+            WriteString(out, input.id);
+            WriteString(out, input.device);
+            WriteString(out, input.label);
+            WriteValue(out, input.total);
+            WriteValue(out, input.downTotal);
+            WriteValue(out, input.upTotal);
+            WriteValue(out, input.lastTimeSeconds);
+            WriteString(out, input.lastAppName);
+
+            const uint32_t appCount = static_cast<uint32_t>(input.appTotals.size());
+            WriteValue(out, appCount);
+            for (const AppInputStats& app : input.appTotals)
+            {
+                WriteString(out, app.appName);
+                WriteValue(out, app.processId);
+                WriteValue(out, app.total);
+                WriteValue(out, app.downTotal);
+                WriteValue(out, app.upTotal);
+            }
+        }
+
+        const uint32_t monitorCount = static_cast<uint32_t>(g_monitors.size());
+        WriteValue(out, monitorCount);
+        for (const MonitorHeatmap& monitor : g_monitors)
+        {
+            WriteValue(out, monitor.rect.left);
+            WriteValue(out, monitor.rect.top);
+            WriteValue(out, monitor.rect.right);
+            WriteValue(out, monitor.rect.bottom);
+            WriteString(out, monitor.name);
+            WriteValue(out, monitor.maxBin);
+            out.write(reinterpret_cast<const char*>(monitor.bins.data()), static_cast<std::streamsize>(monitor.bins.size() * sizeof(uint32_t)));
+        }
+
+        if (!out.good())
+        {
+            g_saveLoadStatus = "Save failed: write error.";
+            return false;
+        }
+
+        g_dataFilePath = path;
+        g_lastAutoSaveTime = std::chrono::steady_clock::now();
+        g_saveLoadStatus = "Saved: " + path;
+        return true;
+    }
+
+    bool LoadSnapshotFromFile(const std::string& path)
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (!in)
+        {
+            g_saveLoadStatus = "Load failed: unable to open file.";
+            return false;
+        }
+
+        char magic[8]{};
+        in.read(magic, sizeof(magic));
+        const char expected[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '1', '\0' };
+        if (memcmp(magic, expected, sizeof(expected)) != 0)
+        {
+            g_saveLoadStatus = "Load failed: invalid file format.";
+            return false;
+        }
+
+        std::vector<InputStats> loadedInputs;
+        std::vector<MonitorHeatmap> loadedMonitors;
+        POINT loadedMouseDelta{};
+        int loadedWheelDelta = 0;
+        int loadedLeftClicks = 0;
+        int loadedRightClicks = 0;
+        int loadedMiddleClicks = 0;
+
+        if (!ReadValue(in, loadedMouseDelta.x) ||
+            !ReadValue(in, loadedMouseDelta.y) ||
+            !ReadValue(in, loadedWheelDelta) ||
+            !ReadValue(in, loadedLeftClicks) ||
+            !ReadValue(in, loadedRightClicks) ||
+            !ReadValue(in, loadedMiddleClicks))
+        {
+            g_saveLoadStatus = "Load failed: truncated file.";
+            return false;
+        }
+
+        uint32_t inputCount = 0;
+        if (!ReadValue(in, inputCount) || inputCount > 100000)
+        {
+            g_saveLoadStatus = "Load failed: invalid input count.";
+            return false;
+        }
+
+        loadedInputs.reserve(inputCount);
+        for (uint32_t i = 0; i < inputCount; ++i)
+        {
+            InputStats input;
+            if (!ReadString(in, input.id) ||
+                !ReadString(in, input.device) ||
+                !ReadString(in, input.label) ||
+                !ReadValue(in, input.total) ||
+                !ReadValue(in, input.downTotal) ||
+                !ReadValue(in, input.upTotal) ||
+                !ReadValue(in, input.lastTimeSeconds) ||
+                !ReadString(in, input.lastAppName))
+            {
+                g_saveLoadStatus = "Load failed: invalid input data.";
+                return false;
+            }
+
+            uint32_t appCount = 0;
+            if (!ReadValue(in, appCount) || appCount > 100000)
+            {
+                g_saveLoadStatus = "Load failed: invalid app count.";
+                return false;
+            }
+
+            input.appTotals.reserve(appCount);
+            for (uint32_t appIndex = 0; appIndex < appCount; ++appIndex)
+            {
+                AppInputStats app;
+                if (!ReadString(in, app.appName) ||
+                    !ReadValue(in, app.processId) ||
+                    !ReadValue(in, app.total) ||
+                    !ReadValue(in, app.downTotal) ||
+                    !ReadValue(in, app.upTotal))
+                {
+                    g_saveLoadStatus = "Load failed: invalid app data.";
+                    return false;
+                }
+
+                input.appTotals.push_back(std::move(app));
+            }
+
+            loadedInputs.push_back(std::move(input));
+        }
+
+        uint32_t monitorCount = 0;
+        if (!ReadValue(in, monitorCount) || monitorCount > 128)
+        {
+            g_saveLoadStatus = "Load failed: invalid monitor count.";
+            return false;
+        }
+
+        loadedMonitors.reserve(monitorCount);
+        for (uint32_t i = 0; i < monitorCount; ++i)
+        {
+            MonitorHeatmap monitor;
+            if (!ReadValue(in, monitor.rect.left) ||
+                !ReadValue(in, monitor.rect.top) ||
+                !ReadValue(in, monitor.rect.right) ||
+                !ReadValue(in, monitor.rect.bottom) ||
+                !ReadString(in, monitor.name) ||
+                !ReadValue(in, monitor.maxBin))
+            {
+                g_saveLoadStatus = "Load failed: invalid monitor data.";
+                return false;
+            }
+
+            in.read(reinterpret_cast<char*>(monitor.bins.data()), static_cast<std::streamsize>(monitor.bins.size() * sizeof(uint32_t)));
+            if (!in.good())
+            {
+                g_saveLoadStatus = "Load failed: invalid heatmap data.";
+                return false;
+            }
+
+            loadedMonitors.push_back(std::move(monitor));
+        }
+
+        g_inputs = std::move(loadedInputs);
+        g_monitors = std::move(loadedMonitors);
+        g_mouseDelta = loadedMouseDelta;
+        g_wheelDelta = loadedWheelDelta;
+        g_leftClicks = loadedLeftClicks;
+        g_rightClicks = loadedRightClicks;
+        g_middleClicks = loadedMiddleClicks;
+        g_selectedInputId.clear();
+        g_selectedProgramName.clear();
+        g_selectedProgramPid = 0;
+        g_keysDown.fill(false);
+        g_activeCombosByKey.fill({});
+        g_mouseDeltaSamples.clear();
+        g_dataFilePath = path;
+        g_lastAutoSaveTime = std::chrono::steady_clock::now();
+        g_saveLoadStatus = "Loaded: " + path;
+        return true;
+    }
+
+    std::string ShowSnapshotFileDialog(bool save)
+    {
+        wchar_t fileName[MAX_PATH]{};
+        OPENFILENAMEW ofn{};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = g_hwnd;
+        ofn.lpstrFile = fileName;
+        ofn.nMaxFile = static_cast<DWORD>(std::size(fileName));
+        ofn.lpstrFilter = L"Keynalysis Data (*.kna)\0*.kna\0All Files (*.*)\0*.*\0";
+        ofn.nFilterIndex = 1;
+        ofn.lpstrDefExt = L"kna";
+        ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+
+        if (save)
+        {
+            ofn.Flags |= OFN_OVERWRITEPROMPT;
+            if (!GetSaveFileNameW(&ofn))
+                return {};
+        }
+        else
+        {
+            ofn.Flags |= OFN_FILEMUSTEXIST;
+            if (!GetOpenFileNameW(&ofn))
+                return {};
+        }
+
+        return WideToUtf8(fileName);
+    }
+
+    void MaybeAutoSave()
+    {
+        if (!g_autoSaveEnabled || g_dataFilePath.empty())
+            return;
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - g_lastAutoSaveTime).count();
+        if (elapsed >= AUTO_SAVE_SECONDS)
+            SaveSnapshotToFile(g_dataFilePath);
     }
 
     void ClearInputData()
@@ -904,8 +1202,29 @@ namespace
         if (ImGui::Button("Clear data"))
             ClearInputData();
         ImGui::SameLine();
+        if (ImGui::Button("Save"))
+            SaveSnapshotToFile(g_dataFilePath);
+        ImGui::SameLine();
+        if (ImGui::Button("Save As"))
+        {
+            const std::string path = ShowSnapshotFileDialog(true);
+            if (!path.empty())
+                SaveSnapshotToFile(path);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Load"))
+        {
+            const std::string path = ShowSnapshotFileDialog(false);
+            if (!path.empty())
+                LoadSnapshotFromFile(path);
+        }
+        ImGui::SameLine();
+        ImGui::Checkbox("Auto save", &g_autoSaveEnabled);
+        ImGui::SameLine();
         if (ImGui::Button("Minimize"))
             ShowWindow(g_hwnd, SW_MINIMIZE);
+        if (!g_saveLoadStatus.empty())
+            ImGui::TextUnformatted(g_saveLoadStatus.c_str());
     }
 
     void DrawOverviewStats()
@@ -1979,6 +2298,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 
         if (g_captureEnabled)
             PollSystemCombos();
+
+        MaybeAutoSave();
 
         if (IsIconic(hwnd))
         {
