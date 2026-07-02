@@ -62,7 +62,7 @@ namespace
 
     struct FocusContext
     {
-        std::string appName = "Unknown";
+        std::string appName = "Other";
         DWORD processId = 0;
     };
 
@@ -321,6 +321,12 @@ namespace
         return path.substr(slash + 1);
     }
 
+    void NormalizeProgramName(std::string& appName, DWORD processId)
+    {
+        if (processId == 0 || appName.empty() || appName == "Unknown")
+            appName = "Other";
+    }
+
     FocusContext GetFocusContext()
     {
         FocusContext context;
@@ -342,6 +348,7 @@ namespace
             context.appName = FileNameFromPath(WideToUtf8(imagePath));
 
         CloseHandle(process);
+        NormalizeProgramName(context.appName, context.processId);
         return context;
     }
 
@@ -926,6 +933,7 @@ namespace
                     activity.activeSeconds = 0.0;
                 if (!std::isfinite(activity.lastInputSeconds))
                     activity.lastInputSeconds = -1.0;
+                NormalizeProgramName(activity.appName, activity.processId);
 
                 loadedProgramActivity.push_back(std::move(activity));
             }
@@ -1026,8 +1034,13 @@ namespace
                     return false;
                 }
 
+                NormalizeProgramName(app.appName, app.processId);
                 input.appTotals.push_back(std::move(app));
             }
+
+            NormalizeProgramName(input.lastAppName, input.lastAppName == "Other" ? 0 : 1);
+            for (InputEvent& event : input.events)
+                NormalizeProgramName(event.appName, event.processId);
 
             loadedInputs.push_back(std::move(input));
         }
@@ -1131,6 +1144,7 @@ namespace
                         return false;
                     }
 
+                    NormalizeProgramName(programHeatmap.appName, programHeatmap.processId);
                     programHeatmap.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
                     in.read(reinterpret_cast<char*>(programHeatmap.bins.data()), static_cast<std::streamsize>(programHeatmap.bins.size() * sizeof(uint32_t)));
                     if (!in.good())
