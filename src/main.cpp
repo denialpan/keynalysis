@@ -119,6 +119,8 @@ namespace
     bool g_trayIconVisible = false;
     bool g_autoSaveEnabled = true;
     std::string g_dataFilePath = "keynalysis_autosave.kna";
+    std::string g_settingsFilePath = "keynalysis_settings.cfg";
+    std::string g_imguiIniPath = "keynalysis_imgui.ini";
     std::string g_saveLoadStatus;
     auto g_lastAutoSaveTime = std::chrono::steady_clock::now();
     auto g_startTime = std::chrono::steady_clock::now();
@@ -480,6 +482,61 @@ namespace
         return in.good();
     }
 
+    bool FileExists(const std::string& path)
+    {
+        const DWORD attributes = GetFileAttributesA(path.c_str());
+        return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+    }
+
+    void DisableDefaultDockRebuilds()
+    {
+        g_rebuildHomeDockLayout = false;
+        g_rebuildKeyboardDockLayout = false;
+        g_rebuildMouseDockLayout = false;
+        g_rebuildProgramsDockLayout = false;
+    }
+
+    bool SaveAppSettings()
+    {
+        std::ofstream out(g_settingsFilePath, std::ios::binary);
+        if (!out)
+            return false;
+
+        const char magic[8] = { 'K', 'N', 'S', 'E', 'T', '1', '\0', '\0' };
+        out.write(magic, sizeof(magic));
+        WriteString(out, g_dataFilePath);
+        WriteString(out, g_imguiIniPath);
+        const uint8_t autoSave = g_autoSaveEnabled ? 1 : 0;
+        WriteValue(out, autoSave);
+        return out.good();
+    }
+
+    bool LoadAppSettings()
+    {
+        std::ifstream in(g_settingsFilePath, std::ios::binary);
+        if (!in)
+            return false;
+
+        char magic[8]{};
+        in.read(magic, sizeof(magic));
+        const char expected[8] = { 'K', 'N', 'S', 'E', 'T', '1', '\0', '\0' };
+        if (memcmp(magic, expected, sizeof(expected)) != 0)
+            return false;
+
+        std::string dataPath;
+        std::string iniPath;
+        uint8_t autoSave = 1;
+        if (!ReadString(in, dataPath) || !ReadString(in, iniPath) || !ReadValue(in, autoSave))
+            return false;
+
+        if (!dataPath.empty())
+            g_dataFilePath = dataPath;
+        if (!iniPath.empty())
+            g_imguiIniPath = iniPath;
+        g_autoSaveEnabled = autoSave != 0;
+        return true;
+    }
+
     bool SaveSnapshotToFile(const std::string& path)
     {
         std::ofstream out(path, std::ios::binary);
@@ -556,6 +613,7 @@ namespace
         g_dataFilePath = path;
         g_lastAutoSaveTime = std::chrono::steady_clock::now();
         g_saveLoadStatus = "Saved: " + path;
+        SaveAppSettings();
         return true;
     }
 
@@ -730,6 +788,7 @@ namespace
         g_dataFilePath = path;
         g_lastAutoSaveTime = std::chrono::steady_clock::now();
         g_saveLoadStatus = "Loaded: " + path;
+        SaveAppSettings();
         return true;
     }
 
@@ -1320,7 +1379,10 @@ namespace
                         LoadSnapshotFromFile(path);
                 }
                 ImGui::Separator();
+                const bool previousAutoSave = g_autoSaveEnabled;
                 ImGui::MenuItem("Auto save", nullptr, &g_autoSaveEnabled);
+                if (previousAutoSave != g_autoSaveEnabled)
+                    SaveAppSettings();
                 ImGui::EndMenu();
             }
 
@@ -2483,6 +2545,13 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    const bool loadedAppSettings = LoadAppSettings();
+    io.IniFilename = g_imguiIniPath.c_str();
+    if (FileExists(g_imguiIniPath))
+        DisableDefaultDockRebuilds();
+
+    if (loadedAppSettings && FileExists(g_dataFilePath))
+        LoadSnapshotFromFile(g_dataFilePath);
 
     ImGui::StyleColorsDark();
     ImGui_ImplWin32_Init(hwnd);
@@ -2526,6 +2595,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         g_pSwapChain->Present(1, 0);
     }
+
+    ImGui::SaveIniSettingsToDisk(g_imguiIniPath.c_str());
+    SaveAppSettings();
 
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
