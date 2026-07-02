@@ -68,6 +68,16 @@ namespace
     {
         float dx = 0.0f;
         float dy = 0.0f;
+        std::string appName;
+        DWORD processId = 0;
+    };
+
+    struct ProgramHeatmap
+    {
+        std::string appName;
+        DWORD processId = 0;
+        std::array<uint32_t, 48 * 27> bins{};
+        uint32_t maxBin = 0;
     };
 
     struct MonitorHeatmap
@@ -76,6 +86,7 @@ namespace
         std::string name;
         std::array<uint32_t, 48 * 27> bins{};
         uint32_t maxBin = 0;
+        std::vector<ProgramHeatmap> programHeatmaps;
     };
 
     HWND g_hwnd = nullptr;
@@ -88,6 +99,8 @@ namespace
     std::string g_selectedInputId;
     std::string g_selectedProgramName;
     DWORD g_selectedProgramPid = 0;
+    std::string g_visualFilterProgramName;
+    DWORD g_visualFilterProgramPid = 0;
     int g_selectedMonitorIndex = 0;
     bool g_rebuildHomeDockLayout = true;
     bool g_rebuildKeyboardDockLayout = true;
@@ -281,14 +294,32 @@ namespace
         return -1;
     }
 
-    void AddMouseDeltaSample(LONG dx, LONG dy)
+    bool MatchesVisualProgramFilter(const std::string& appName, DWORD processId)
     {
-        g_mouseDeltaSamples.push_back({ static_cast<float>(dx), static_cast<float>(dy) });
+        return g_visualFilterProgramPid == 0 ||
+            (processId == g_visualFilterProgramPid && appName == g_visualFilterProgramName);
+    }
+
+    ProgramHeatmap& GetProgramHeatmap(MonitorHeatmap& monitor, const FocusContext& focus)
+    {
+        for (ProgramHeatmap& programHeatmap : monitor.programHeatmaps)
+        {
+            if (programHeatmap.processId == focus.processId && programHeatmap.appName == focus.appName)
+                return programHeatmap;
+        }
+
+        monitor.programHeatmaps.push_back({ focus.appName, focus.processId });
+        return monitor.programHeatmaps.back();
+    }
+
+    void AddMouseDeltaSample(LONG dx, LONG dy, const FocusContext& focus)
+    {
+        g_mouseDeltaSamples.push_back({ static_cast<float>(dx), static_cast<float>(dy), focus.appName, focus.processId });
         while (g_mouseDeltaSamples.size() > 240)
             g_mouseDeltaSamples.pop_front();
     }
 
-    void AddCursorHeatSample()
+    void AddCursorHeatSample(const FocusContext& focus)
     {
         if (g_monitors.empty())
             RefreshMonitors();
@@ -313,6 +344,10 @@ namespace
 
         ++heatmap.bins[binIndex];
         heatmap.maxBin = std::max(heatmap.maxBin, heatmap.bins[binIndex]);
+
+        ProgramHeatmap& programHeatmap = GetProgramHeatmap(heatmap, focus);
+        ++programHeatmap.bins[binIndex];
+        programHeatmap.maxBin = std::max(programHeatmap.maxBin, programHeatmap.bins[binIndex]);
     }
 
     InputStats& GetInputStats(const std::string& id, const std::string& device, const std::string& label)
@@ -454,7 +489,7 @@ namespace
             return false;
         }
 
-        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '1', '\0' };
+        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '2', '\0' };
         out.write(magic, sizeof(magic));
 
         WriteValue(out, g_mouseDelta.x);
@@ -500,6 +535,16 @@ namespace
             WriteString(out, monitor.name);
             WriteValue(out, monitor.maxBin);
             out.write(reinterpret_cast<const char*>(monitor.bins.data()), static_cast<std::streamsize>(monitor.bins.size() * sizeof(uint32_t)));
+
+            const uint32_t programHeatmapCount = static_cast<uint32_t>(monitor.programHeatmaps.size());
+            WriteValue(out, programHeatmapCount);
+            for (const ProgramHeatmap& programHeatmap : monitor.programHeatmaps)
+            {
+                WriteString(out, programHeatmap.appName);
+                WriteValue(out, programHeatmap.processId);
+                WriteValue(out, programHeatmap.maxBin);
+                out.write(reinterpret_cast<const char*>(programHeatmap.bins.data()), static_cast<std::streamsize>(programHeatmap.bins.size() * sizeof(uint32_t)));
+            }
         }
 
         if (!out.good())
@@ -525,8 +570,11 @@ namespace
 
         char magic[8]{};
         in.read(magic, sizeof(magic));
-        const char expected[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '1', '\0' };
-        if (memcmp(magic, expected, sizeof(expected)) != 0)
+        const char expectedV1[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '1', '\0' };
+        const char expectedV2[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '2', '\0' };
+        const bool isV1 = memcmp(magic, expectedV1, sizeof(expectedV1)) == 0;
+        const bool isV2 = memcmp(magic, expectedV2, sizeof(expectedV2)) == 0;
+        if (!isV1 && !isV2)
         {
             g_saveLoadStatus = "Load failed: invalid file format.";
             return false;
@@ -631,6 +679,38 @@ namespace
                 return false;
             }
 
+            if (isV2)
+            {
+                uint32_t programHeatmapCount = 0;
+                if (!ReadValue(in, programHeatmapCount) || programHeatmapCount > 100000)
+                {
+                    g_saveLoadStatus = "Load failed: invalid program heatmap count.";
+                    return false;
+                }
+
+                monitor.programHeatmaps.reserve(programHeatmapCount);
+                for (uint32_t programIndex = 0; programIndex < programHeatmapCount; ++programIndex)
+                {
+                    ProgramHeatmap programHeatmap;
+                    if (!ReadString(in, programHeatmap.appName) ||
+                        !ReadValue(in, programHeatmap.processId) ||
+                        !ReadValue(in, programHeatmap.maxBin))
+                    {
+                        g_saveLoadStatus = "Load failed: invalid program heatmap data.";
+                        return false;
+                    }
+
+                    in.read(reinterpret_cast<char*>(programHeatmap.bins.data()), static_cast<std::streamsize>(programHeatmap.bins.size() * sizeof(uint32_t)));
+                    if (!in.good())
+                    {
+                        g_saveLoadStatus = "Load failed: invalid program heatmap bins.";
+                        return false;
+                    }
+
+                    monitor.programHeatmaps.push_back(std::move(programHeatmap));
+                }
+            }
+
             loadedMonitors.push_back(std::move(monitor));
         }
 
@@ -704,6 +784,7 @@ namespace
         {
             monitor.bins.fill(0);
             monitor.maxBin = 0;
+            monitor.programHeatmaps.clear();
         }
         g_mouseDelta = {};
         g_wheelDelta = 0;
@@ -958,13 +1039,14 @@ namespace
 
     void HandleRawMouse(const RAWMOUSE& mouse)
     {
-        AddCursorHeatSample();
+        const FocusContext focus = GetFocusContext();
+        AddCursorHeatSample(focus);
 
         if (mouse.lLastX != 0 || mouse.lLastY != 0)
         {
             g_mouseDelta.x += mouse.lLastX;
             g_mouseDelta.y += mouse.lLastY;
-            AddMouseDeltaSample(mouse.lLastX, mouse.lLastY);
+            AddMouseDeltaSample(mouse.lLastX, mouse.lLastY, focus);
             AddInputEvent("mouse:move", "Mouse", "Movement", "Move", "dx " + std::to_string(mouse.lLastX) + ", dy " + std::to_string(mouse.lLastY));
         }
 
@@ -1021,30 +1103,37 @@ namespace
         const float midY = origin.y + canvasSize.y * 0.5f;
         drawList->AddLine(ImVec2(origin.x, midY), ImVec2(end.x, midY), IM_COL32(70, 76, 84, 255));
 
-        if (g_mouseDeltaSamples.size() < 2)
+        std::vector<const MouseDeltaSample*> samples;
+        for (const MouseDeltaSample& sample : g_mouseDeltaSamples)
+        {
+            if (MatchesVisualProgramFilter(sample.appName, sample.processId))
+                samples.push_back(&sample);
+        }
+
+        if (samples.size() < 2)
         {
             drawList->AddText(ImVec2(origin.x + 8.0f, origin.y + 8.0f), IM_COL32(160, 166, 176, 255), "Move the mouse to populate delta data");
             return;
         }
 
         float maxAbs = 1.0f;
-        for (const MouseDeltaSample& sample : g_mouseDeltaSamples)
+        for (const MouseDeltaSample* sample : samples)
         {
-            maxAbs = std::max(maxAbs, std::abs(sample.dx));
-            maxAbs = std::max(maxAbs, std::abs(sample.dy));
+            maxAbs = std::max(maxAbs, std::abs(sample->dx));
+            maxAbs = std::max(maxAbs, std::abs(sample->dy));
         }
 
         auto pointForSample = [&](size_t index, float value) {
-            const float t = static_cast<float>(index) / static_cast<float>(g_mouseDeltaSamples.size() - 1);
+            const float t = static_cast<float>(index) / static_cast<float>(samples.size() - 1);
             const float x = origin.x + t * canvasSize.x;
             const float y = midY - (value / maxAbs) * (canvasSize.y * 0.45f);
             return ImVec2(x, y);
         };
 
-        for (size_t i = 1; i < g_mouseDeltaSamples.size(); ++i)
+        for (size_t i = 1; i < samples.size(); ++i)
         {
-            drawList->AddLine(pointForSample(i - 1, g_mouseDeltaSamples[i - 1].dx), pointForSample(i, g_mouseDeltaSamples[i].dx), IM_COL32(92, 180, 255, 255), 1.5f);
-            drawList->AddLine(pointForSample(i - 1, g_mouseDeltaSamples[i - 1].dy), pointForSample(i, g_mouseDeltaSamples[i].dy), IM_COL32(255, 174, 92, 255), 1.5f);
+            drawList->AddLine(pointForSample(i - 1, samples[i - 1]->dx), pointForSample(i, samples[i]->dx), IM_COL32(92, 180, 255, 255), 1.5f);
+            drawList->AddLine(pointForSample(i - 1, samples[i - 1]->dy), pointForSample(i, samples[i]->dy), IM_COL32(255, 174, 92, 255), 1.5f);
         }
 
         drawList->AddText(ImVec2(origin.x + 8.0f, origin.y + 8.0f), IM_COL32(92, 180, 255, 255), "dx");
@@ -1102,21 +1191,41 @@ namespace
 
         g_selectedMonitorIndex = std::clamp(g_selectedMonitorIndex, 0, static_cast<int>(g_monitors.size()) - 1);
         const MonitorHeatmap& heatmap = g_monitors[g_selectedMonitorIndex];
+        const std::array<uint32_t, HEATMAP_COLUMNS * HEATMAP_ROWS>* bins = &heatmap.bins;
+        uint32_t maxBin = heatmap.maxBin;
+        if (g_visualFilterProgramPid != 0)
+        {
+            bins = nullptr;
+            maxBin = 0;
+            for (const ProgramHeatmap& programHeatmap : heatmap.programHeatmaps)
+            {
+                if (MatchesVisualProgramFilter(programHeatmap.appName, programHeatmap.processId))
+                {
+                    bins = &programHeatmap.bins;
+                    maxBin = programHeatmap.maxBin;
+                    break;
+                }
+            }
+        }
+
         const float cellW = canvasSize.x / static_cast<float>(HEATMAP_COLUMNS);
         const float cellH = canvasSize.y / static_cast<float>(HEATMAP_ROWS);
 
-        for (int y = 0; y < HEATMAP_ROWS; ++y)
+        if (bins)
         {
-            for (int x = 0; x < HEATMAP_COLUMNS; ++x)
+            for (int y = 0; y < HEATMAP_ROWS; ++y)
             {
-                const uint32_t count = heatmap.bins[y * HEATMAP_COLUMNS + x];
-                if (count == 0)
-                    continue;
+                for (int x = 0; x < HEATMAP_COLUMNS; ++x)
+                {
+                    const uint32_t count = (*bins)[y * HEATMAP_COLUMNS + x];
+                    if (count == 0)
+                        continue;
 
-                const float value = heatmap.maxBin > 0 ? static_cast<float>(count) / static_cast<float>(heatmap.maxBin) : 0.0f;
-                const ImVec2 cellMin(origin.x + x * cellW, origin.y + y * cellH);
-                const ImVec2 cellMax(origin.x + (x + 1) * cellW, origin.y + (y + 1) * cellH);
-                drawList->AddRectFilled(cellMin, cellMax, HeatColor(value));
+                    const float value = maxBin > 0 ? static_cast<float>(count) / static_cast<float>(maxBin) : 0.0f;
+                    const ImVec2 cellMin(origin.x + x * cellW, origin.y + y * cellH);
+                    const ImVec2 cellMax(origin.x + (x + 1) * cellW, origin.y + (y + 1) * cellH);
+                    drawList->AddRectFilled(cellMin, cellMax, HeatColor(value));
+                }
             }
         }
 
@@ -1132,7 +1241,7 @@ namespace
         }
 
         char label[128]{};
-        snprintf(label, sizeof(label), "max cell: %u", heatmap.maxBin);
+        snprintf(label, sizeof(label), "max cell: %u", maxBin);
         drawList->AddText(ImVec2(origin.x + 8.0f, origin.y + 8.0f), IM_COL32(220, 224, 230, 255), label);
     }
 
@@ -1249,6 +1358,71 @@ namespace
         ImGui::Text("Mouse delta total: x %ld, y %ld", g_mouseDelta.x, g_mouseDelta.y);
         ImGui::Text("Wheel total: %d", g_wheelDelta);
         ImGui::Text("Clicks: left %d, right %d, middle %d", g_leftClicks, g_rightClicks, g_middleClicks);
+    }
+
+    struct ProgramFilterOption
+    {
+        std::string appName;
+        DWORD processId = 0;
+    };
+
+    std::vector<ProgramFilterOption> BuildProgramFilterOptions()
+    {
+        std::vector<ProgramFilterOption> options;
+        for (const InputStats& input : g_inputs)
+        {
+            for (const AppInputStats& app : input.appTotals)
+            {
+                const bool exists = std::any_of(options.begin(), options.end(), [&](const ProgramFilterOption& option) {
+                    return option.processId == app.processId && option.appName == app.appName;
+                });
+
+                if (!exists)
+                    options.push_back({ app.appName, app.processId });
+            }
+        }
+
+        std::sort(options.begin(), options.end(), [](const ProgramFilterOption& a, const ProgramFilterOption& b) {
+            if (a.appName == b.appName)
+                return a.processId < b.processId;
+            return a.appName < b.appName;
+        });
+        return options;
+    }
+
+    void DrawProgramFilterControl(const char* label)
+    {
+        std::string preview = "All programs";
+        if (g_visualFilterProgramPid != 0)
+            preview = g_visualFilterProgramName + " (" + std::to_string(g_visualFilterProgramPid) + ")";
+
+        ImGui::SetNextItemWidth(280.0f);
+        if (ImGui::BeginCombo(label, preview.c_str()))
+        {
+            const bool allSelected = g_visualFilterProgramPid == 0;
+            if (ImGui::Selectable("All programs", allSelected))
+            {
+                g_visualFilterProgramPid = 0;
+                g_visualFilterProgramName.clear();
+            }
+            if (allSelected)
+                ImGui::SetItemDefaultFocus();
+
+            for (const ProgramFilterOption& option : BuildProgramFilterOptions())
+            {
+                const bool selected = option.processId == g_visualFilterProgramPid && option.appName == g_visualFilterProgramName;
+                const std::string item = option.appName + " (" + std::to_string(option.processId) + ")";
+                if (ImGui::Selectable(item.c_str(), selected))
+                {
+                    g_visualFilterProgramPid = option.processId;
+                    g_visualFilterProgramName = option.appName;
+                }
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+
+            ImGui::EndCombo();
+        }
     }
 
     void DrawVerticalSplitter(const char* id, float& leftWidth, float totalWidth, float minLeft, float minRight)
@@ -1447,13 +1621,31 @@ namespace
         InputStats* stats = FindInputStats(id);
         const bool selected = g_selectedInputId == id;
         const bool down = stats && stats->isDown;
+        uint64_t displayTotal = stats ? stats->total : 0;
+        uint64_t displayDown = stats ? stats->downTotal : 0;
+        uint64_t displayUp = stats ? stats->upTotal : 0;
+        if (stats && g_visualFilterProgramPid != 0)
+        {
+            displayTotal = 0;
+            displayDown = 0;
+            displayUp = 0;
+            for (const AppInputStats& app : stats->appTotals)
+            {
+                if (MatchesVisualProgramFilter(app.appName, app.processId))
+                {
+                    displayTotal += app.total;
+                    displayDown += app.downTotal;
+                    displayUp += app.upTotal;
+                }
+            }
+        }
 
         ImVec4 base = ImGui::GetStyleColorVec4(ImGuiCol_Button);
         ImVec4 hovered = ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered);
         ImVec4 active = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
-        if (stats && stats->total > 0)
+        if (displayTotal > 0)
         {
-            const float intensity = std::min(1.0f, static_cast<float>(stats->total) / 25.0f);
+            const float intensity = std::min(1.0f, static_cast<float>(displayTotal) / 25.0f);
             base = ImVec4(0.18f + intensity * 0.25f, 0.32f + intensity * 0.25f, 0.50f + intensity * 0.18f, 1.0f);
             hovered = ImVec4(base.x + 0.08f, base.y + 0.08f, base.z + 0.08f, 1.0f);
             active = ImVec4(0.25f, 0.55f, 0.82f, 1.0f);
@@ -1482,7 +1674,7 @@ namespace
         ImGui::PopStyleColor(3);
 
         if (stats && ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s\nTotal: %llu\nDown: %llu\nUp: %llu", label, static_cast<unsigned long long>(stats->total), static_cast<unsigned long long>(stats->downTotal), static_cast<unsigned long long>(stats->upTotal));
+            ImGui::SetTooltip("%s\nTotal: %llu\nDown: %llu\nUp: %llu", label, static_cast<unsigned long long>(displayTotal), static_cast<unsigned long long>(displayDown), static_cast<unsigned long long>(displayUp));
     }
 
     void DrawKeyGap(float units = 1.0f)
@@ -1499,6 +1691,7 @@ namespace
     {
         ImGui::TextUnformatted("100% QWERTY Layout");
         ImGui::TextUnformatted("Blue intensity reflects total input count. Orange indicates currently down.");
+        DrawProgramFilterControl("Program Filter##keyboard-diagram");
         ImGui::Separator();
 
         ImGui::BeginChild("keyboard-diagram-scroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
@@ -1914,6 +2107,7 @@ namespace
             ImGui::Text("Wheel total: %d", g_wheelDelta);
             ImGui::Text("Clicks: left %d, right %d, middle %d", g_leftClicks, g_rightClicks, g_middleClicks);
             ImGui::Text("Tracked mouse inputs: %d", TrackedInputs("Mouse"));
+            DrawProgramFilterControl("Program Filter##mouse-delta");
             ImGui::Spacing();
 
             DrawMouseDeltaGraph(ImGui::GetContentRegionAvail());
@@ -1922,6 +2116,7 @@ namespace
 
         if (ImGui::Begin("Mouse / Cursor Heatmap"))
         {
+            DrawProgramFilterControl("Program Filter##mouse-heatmap");
             DrawCursorHeatmap(ImGui::GetContentRegionAvail());
         }
         ImGui::End();
