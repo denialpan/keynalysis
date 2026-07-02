@@ -1517,6 +1517,62 @@ namespace
         return total;
     }
 
+    bool IsMouseClickInput(const InputStats& input)
+    {
+        return input.device == "Mouse" &&
+            (input.id == "mouse:Left" || input.id == "mouse:Right" || input.id == "mouse:Middle");
+    }
+
+    double RuntimeMinutes()
+    {
+        return std::max(NowSeconds() / 60.0, 1.0 / 60.0);
+    }
+
+    double PerMinute(uint64_t count)
+    {
+        return static_cast<double>(count) / RuntimeMinutes();
+    }
+
+    uint64_t TotalDownExactDevice(const char* device)
+    {
+        uint64_t total = 0;
+        for (const InputStats& input : g_inputs)
+        {
+            if (input.device == device)
+                total += input.downTotal;
+        }
+
+        return total;
+    }
+
+    uint64_t TotalMouseClicks()
+    {
+        uint64_t total = 0;
+        for (const InputStats& input : g_inputs)
+        {
+            if (IsMouseClickInput(input))
+                total += input.downTotal;
+        }
+
+        return total;
+    }
+
+    uint64_t RateCountForInput(const InputStats& input)
+    {
+        if (input.device == "Keyboard" || input.device == "Keyboard Combo" || IsMouseClickInput(input))
+            return input.downTotal;
+
+        return input.total;
+    }
+
+    uint64_t RateCountForAppInput(const InputStats& input, const AppInputStats& app)
+    {
+        if (input.device == "Keyboard" || input.device == "Keyboard Combo" || IsMouseClickInput(input))
+            return app.downTotal;
+
+        return app.total;
+    }
+
     int CountTrackedPrograms()
     {
         struct TrackedProgram
@@ -1569,6 +1625,12 @@ namespace
         ImGui::Text("Mouse: %llu |", static_cast<unsigned long long>(TotalInvocationsExactDevice("Mouse")));
         ImGui::SameLine();
         ImGui::Text("Programs: %d |", CountTrackedPrograms());
+        ImGui::SameLine();
+        ImGui::Text("Key/min: %.2f |", PerMinute(TotalDownExactDevice("Keyboard")));
+        ImGui::SameLine();
+        ImGui::Text("Combo/min: %.2f |", PerMinute(TotalDownExactDevice("Keyboard Combo")));
+        ImGui::SameLine();
+        ImGui::Text("Click/min: %.2f |", PerMinute(TotalMouseClicks()));
         ImGui::SameLine();
         ImGui::Text("File time: %s |", FormatDuration(NowSeconds()).c_str());
     }
@@ -1748,13 +1810,14 @@ namespace
             ImGuiTableFlags_Sortable |
             ImGuiTableFlags_SortMulti;
 
-        if (ImGui::BeginTable(tableId, 8, tableFlags, ImVec2(0, height)))
+        if (ImGui::BeginTable(tableId, 9, tableFlags, ImVec2(0, height)))
         {
             ImGui::TableSetupColumn("Device");
             ImGui::TableSetupColumn("Input");
             ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_DefaultSort);
             ImGui::TableSetupColumn("Down");
             ImGui::TableSetupColumn("Up");
+            ImGui::TableSetupColumn("Avg/min");
             ImGui::TableSetupColumn("State");
             ImGui::TableSetupColumn("Last App");
             ImGui::TableSetupColumn("Last");
@@ -1778,9 +1841,10 @@ namespace
                 case 2: return a->total < b->total;
                 case 3: return a->downTotal < b->downTotal;
                 case 4: return a->upTotal < b->upTotal;
-                case 5: return a->isDown < b->isDown;
-                case 6: return a->lastAppName < b->lastAppName;
-                case 7: return a->lastTimeSeconds < b->lastTimeSeconds;
+                case 5: return RateCountForInput(*a) < RateCountForInput(*b);
+                case 6: return a->isDown < b->isDown;
+                case 7: return a->lastAppName < b->lastAppName;
+                case 8: return a->lastTimeSeconds < b->lastTimeSeconds;
                 default: return a->total < b->total;
                 }
             });
@@ -1803,10 +1867,12 @@ namespace
                 ImGui::TableSetColumnIndex(4);
                 ImGui::Text("%llu", static_cast<unsigned long long>(input.upTotal));
                 ImGui::TableSetColumnIndex(5);
-                ImGui::TextUnformatted(input.isDown ? "Down" : "-");
+                ImGui::Text("%.2f", PerMinute(RateCountForInput(input)));
                 ImGui::TableSetColumnIndex(6);
-                ImGui::TextUnformatted(input.lastAppName.c_str());
+                ImGui::TextUnformatted(input.isDown ? "Down" : "-");
                 ImGui::TableSetColumnIndex(7);
+                ImGui::TextUnformatted(input.lastAppName.c_str());
+                ImGui::TableSetColumnIndex(8);
                 ImGui::Text("%.3f", input.lastTimeSeconds);
             }
             ImGui::EndTable();
@@ -1822,11 +1888,12 @@ namespace
             ImGuiTableFlags_ScrollY |
             ImGuiTableFlags_Sortable;
 
-        if (ImGui::BeginTable(tableId, 3, tableFlags, ImVec2(0, height)))
+        if (ImGui::BeginTable(tableId, 4, tableFlags, ImVec2(0, height)))
         {
             ImGui::TableSetupColumn("Device");
             ImGui::TableSetupColumn("Input");
             ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_DefaultSort);
+            ImGui::TableSetupColumn("Avg/min");
             ImGui::TableHeadersRow();
 
             std::vector<InputStats*> rows;
@@ -1845,6 +1912,7 @@ namespace
                 case 0: return a->device < b->device;
                 case 1: return a->label < b->label;
                 case 2: return a->total < b->total;
+                case 3: return RateCountForInput(*a) < RateCountForInput(*b);
                 default: return a->total < b->total;
                 }
             });
@@ -1861,6 +1929,8 @@ namespace
                     g_selectedInputId = row->id;
                 ImGui::TableSetColumnIndex(2);
                 ImGui::Text("%llu", static_cast<unsigned long long>(row->total));
+                ImGui::TableSetColumnIndex(3);
+                ImGui::Text("%.2f", PerMinute(RateCountForInput(*row)));
             }
 
             ImGui::EndTable();
@@ -1881,6 +1951,7 @@ namespace
         ImGui::Text("Total: %llu", static_cast<unsigned long long>(selectedInput->total));
         ImGui::Text("Down: %llu", static_cast<unsigned long long>(selectedInput->downTotal));
         ImGui::Text("Up: %llu", static_cast<unsigned long long>(selectedInput->upTotal));
+        ImGui::Text("Avg/min: %.2f", PerMinute(RateCountForInput(*selectedInput)));
         ImGui::Text("State: %s", selectedInput->isDown ? "Down" : "-");
         ImGui::Text("Last app: %s", selectedInput->lastAppName.c_str());
         ImGui::Text("Last time: %.3f", selectedInput->lastTimeSeconds);
@@ -2132,13 +2203,14 @@ namespace
             ImGuiTableFlags_ScrollY |
             ImGuiTableFlags_Sortable;
 
-        if (ImGui::BeginTable("selected-app-totals", 5, tableFlags, ImVec2(0, appTableHeight)))
+        if (ImGui::BeginTable("selected-app-totals", 6, tableFlags, ImVec2(0, appTableHeight)))
         {
             ImGui::TableSetupColumn("Program");
             ImGui::TableSetupColumn("PID");
             ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_DefaultSort);
             ImGui::TableSetupColumn("Down");
             ImGui::TableSetupColumn("Up");
+            ImGui::TableSetupColumn("Avg/min");
             ImGui::TableHeadersRow();
 
             std::vector<const AppInputStats*> rows;
@@ -2156,6 +2228,7 @@ namespace
                 case 2: return a->total < b->total;
                 case 3: return a->downTotal < b->downTotal;
                 case 4: return a->upTotal < b->upTotal;
+                case 5: return RateCountForAppInput(*selectedInput, *a) < RateCountForAppInput(*selectedInput, *b);
                 default: return a->total < b->total;
                 }
             });
@@ -2174,6 +2247,8 @@ namespace
                 ImGui::Text("%llu", static_cast<unsigned long long>(app.downTotal));
                 ImGui::TableSetColumnIndex(4);
                 ImGui::Text("%llu", static_cast<unsigned long long>(app.upTotal));
+                ImGui::TableSetColumnIndex(5);
+                ImGui::Text("%.2f", PerMinute(RateCountForAppInput(*selectedInput, app)));
             }
             ImGui::EndTable();
         }
@@ -2431,6 +2506,9 @@ namespace
         uint64_t total = 0;
         uint64_t keyboardTotal = 0;
         uint64_t mouseTotal = 0;
+        uint64_t keyRateCount = 0;
+        uint64_t comboRateCount = 0;
+        uint64_t clickRateCount = 0;
     };
 
     void DrawProgramTab()
@@ -2486,6 +2564,13 @@ namespace
                     totals->keyboardTotal += app.total;
                 else if (input.device == "Mouse")
                     totals->mouseTotal += app.total;
+
+                if (input.device == "Keyboard")
+                    totals->keyRateCount += app.downTotal;
+                else if (input.device == "Keyboard Combo")
+                    totals->comboRateCount += app.downTotal;
+                else if (IsMouseClickInput(input))
+                    totals->clickRateCount += app.downTotal;
             }
         }
 
@@ -2501,13 +2586,16 @@ namespace
             ImGui::Text("Focused programs tracked: %d", static_cast<int>(programs.size()));
             ImGui::Separator();
 
-            if (ImGui::BeginTable("program-summary", 5, tableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y)))
+            if (ImGui::BeginTable("program-summary", 8, tableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y)))
             {
                 ImGui::TableSetupColumn("Program");
                 ImGui::TableSetupColumn("PID");
                 ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_DefaultSort);
                 ImGui::TableSetupColumn("Keyboard");
                 ImGui::TableSetupColumn("Mouse");
+                ImGui::TableSetupColumn("Key/min");
+                ImGui::TableSetupColumn("Combo/min");
+                ImGui::TableSetupColumn("Click/min");
                 ImGui::TableHeadersRow();
 
                 const ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs();
@@ -2518,12 +2606,15 @@ namespace
                     {
                     case 0: return a.appName < b.appName;
                     case 1: return a.processId < b.processId;
-                    case 2: return a.total < b.total;
-                    case 3: return a.keyboardTotal < b.keyboardTotal;
-                    case 4: return a.mouseTotal < b.mouseTotal;
-                    default: return a.total < b.total;
-                    }
-                });
+                case 2: return a.total < b.total;
+                case 3: return a.keyboardTotal < b.keyboardTotal;
+                case 4: return a.mouseTotal < b.mouseTotal;
+                case 5: return a.keyRateCount < b.keyRateCount;
+                case 6: return a.comboRateCount < b.comboRateCount;
+                case 7: return a.clickRateCount < b.clickRateCount;
+                default: return a.total < b.total;
+                }
+            });
 
                 for (const ProgramTotals& program : programs)
                 {
@@ -2544,6 +2635,12 @@ namespace
                     ImGui::Text("%llu", static_cast<unsigned long long>(program.keyboardTotal));
                     ImGui::TableSetColumnIndex(4);
                     ImGui::Text("%llu", static_cast<unsigned long long>(program.mouseTotal));
+                    ImGui::TableSetColumnIndex(5);
+                    ImGui::Text("%.2f", PerMinute(program.keyRateCount));
+                    ImGui::TableSetColumnIndex(6);
+                    ImGui::Text("%.2f", PerMinute(program.comboRateCount));
+                    ImGui::TableSetColumnIndex(7);
+                    ImGui::Text("%.2f", PerMinute(program.clickRateCount));
                 }
 
                 ImGui::EndTable();
@@ -2562,13 +2659,14 @@ namespace
 
             ImGui::Text("Inputs for: %s (%lu)", g_selectedProgramName.c_str(), static_cast<unsigned long>(g_selectedProgramPid));
             ImGui::Separator();
-            if (ImGui::BeginTable("program-inputs", 5, tableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y)))
+            if (ImGui::BeginTable("program-inputs", 6, tableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y)))
             {
                 ImGui::TableSetupColumn("Device");
                 ImGui::TableSetupColumn("Input");
                 ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_DefaultSort);
                 ImGui::TableSetupColumn("Down");
                 ImGui::TableSetupColumn("Up");
+                ImGui::TableSetupColumn("Avg/min");
                 ImGui::TableHeadersRow();
 
                 struct ProgramInputRow
@@ -2598,6 +2696,7 @@ namespace
                     case 2: return a.app->total < b.app->total;
                     case 3: return a.app->downTotal < b.app->downTotal;
                     case 4: return a.app->upTotal < b.app->upTotal;
+                    case 5: return RateCountForAppInput(*a.input, *a.app) < RateCountForAppInput(*b.input, *b.app);
                     default: return a.app->total < b.app->total;
                     }
                 });
@@ -2618,6 +2717,8 @@ namespace
                     ImGui::Text("%llu", static_cast<unsigned long long>(row.app->downTotal));
                     ImGui::TableSetColumnIndex(4);
                     ImGui::Text("%llu", static_cast<unsigned long long>(row.app->upTotal));
+                    ImGui::TableSetColumnIndex(5);
+                    ImGui::Text("%.2f", PerMinute(RateCountForAppInput(*row.input, *row.app)));
                 }
 
                 ImGui::EndTable();
