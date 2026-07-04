@@ -881,6 +881,31 @@ namespace
         return in.good();
     }
 
+    bool SkipBytes(std::ifstream& in, uint64_t byteCount)
+    {
+        if (byteCount == 0)
+            return true;
+        if (byteCount > 1024ull * 1024ull * 1024ull)
+            return false;
+
+        in.seekg(static_cast<std::streamoff>(byteCount), std::ios::cur);
+        return in.good();
+    }
+
+    bool HeatmapDimensionsAreSupported(int columns, int rows)
+    {
+        return columns > 0 && rows > 0 && columns <= 512 && rows <= 512;
+    }
+
+    bool HeatmapDimensionsCanBeSkipped(int columns, int rows)
+    {
+        if (columns <= 0 || rows <= 0 || columns > 4096 || rows > 4096)
+            return false;
+
+        const uint64_t cellCount = static_cast<uint64_t>(columns) * static_cast<uint64_t>(rows);
+        return cellCount <= 4ull * 1024ull * 1024ull;
+    }
+
     bool FileExists(const std::string& path)
     {
         const DWORD attributes = GetFileAttributesA(path.c_str());
@@ -1451,18 +1476,39 @@ namespace
                 }
             }
 
-            if (monitor.columns <= 0 || monitor.rows <= 0 || monitor.columns > 512 || monitor.rows > 512)
+            const bool supportedHeatmapDimensions = HeatmapDimensionsAreSupported(monitor.columns, monitor.rows);
+            const bool skippableHeatmapDimensions = HeatmapDimensionsCanBeSkipped(monitor.columns, monitor.rows);
+            const int savedColumns = monitor.columns;
+            const int savedRows = monitor.rows;
+            if (!supportedHeatmapDimensions && !skippableHeatmapDimensions)
             {
                 g_saveLoadStatus = "Load failed: invalid heatmap dimensions.";
                 return false;
             }
 
-            monitor.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
-            in.read(reinterpret_cast<char*>(monitor.bins.data()), static_cast<std::streamsize>(monitor.bins.size() * sizeof(uint32_t)));
-            if (!in.good())
+            if (supportedHeatmapDimensions)
             {
-                g_saveLoadStatus = "Load failed: invalid heatmap data.";
-                return false;
+                monitor.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
+                in.read(reinterpret_cast<char*>(monitor.bins.data()), static_cast<std::streamsize>(monitor.bins.size() * sizeof(uint32_t)));
+                if (!in.good())
+                {
+                    g_saveLoadStatus = "Load failed: invalid heatmap data.";
+                    return false;
+                }
+            }
+            else
+            {
+                const uint64_t savedCellCount = static_cast<uint64_t>(savedColumns) * static_cast<uint64_t>(savedRows);
+                if (!SkipBytes(in, savedCellCount * sizeof(uint32_t)))
+                {
+                    g_saveLoadStatus = "Load failed: invalid heatmap data.";
+                    return false;
+                }
+
+                monitor.columns = LEGACY_HEATMAP_COLUMNS;
+                monitor.rows = LEGACY_HEATMAP_ROWS;
+                monitor.maxBin = 0;
+                monitor.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
             }
 
             if (isV2 || isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10)
@@ -1487,12 +1533,27 @@ namespace
                     }
 
                     NormalizeProgramName(programHeatmap.appName, programHeatmap.processId);
-                    programHeatmap.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
-                    in.read(reinterpret_cast<char*>(programHeatmap.bins.data()), static_cast<std::streamsize>(programHeatmap.bins.size() * sizeof(uint32_t)));
-                    if (!in.good())
+                    if (supportedHeatmapDimensions)
                     {
-                        g_saveLoadStatus = "Load failed: invalid program heatmap bins.";
-                        return false;
+                        programHeatmap.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
+                        in.read(reinterpret_cast<char*>(programHeatmap.bins.data()), static_cast<std::streamsize>(programHeatmap.bins.size() * sizeof(uint32_t)));
+                        if (!in.good())
+                        {
+                            g_saveLoadStatus = "Load failed: invalid program heatmap bins.";
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        const uint64_t savedCellCount = static_cast<uint64_t>(savedColumns) * static_cast<uint64_t>(savedRows);
+                        if (!SkipBytes(in, savedCellCount * sizeof(uint32_t)))
+                        {
+                            g_saveLoadStatus = "Load failed: invalid program heatmap bins.";
+                            return false;
+                        }
+
+                        programHeatmap.maxBin = 0;
+                        programHeatmap.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
                     }
 
                     monitor.programHeatmaps.push_back(std::move(programHeatmap));
