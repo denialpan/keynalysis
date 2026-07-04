@@ -43,6 +43,8 @@ namespace
         uint64_t total = 0;
         uint64_t downTotal = 0;
         uint64_t upTotal = 0;
+        double firstRecordedSeconds = 0.0;
+        double lastUpdatedSeconds = 0.0;
     };
 
     struct InputStats
@@ -54,6 +56,8 @@ namespace
         uint64_t downTotal = 0;
         uint64_t upTotal = 0;
         bool isDown = false;
+        double firstRecordedSeconds = 0.0;
+        double lastUpdatedSeconds = 0.0;
         double lastTimeSeconds = 0.0;
         std::string lastAppName;
         std::deque<InputEvent> events;
@@ -72,6 +76,8 @@ namespace
         DWORD processId = 0;
         double activeSeconds = 0.0;
         double lastInputSeconds = -1.0;
+        double firstRecordedSeconds = 0.0;
+        double lastUpdatedSeconds = 0.0;
     };
 
     struct ManualKeyName
@@ -590,6 +596,13 @@ namespace
         return input.appTotals.back();
     }
 
+    void TouchAppStats(AppInputStats& app, double now)
+    {
+        if (app.firstRecordedSeconds <= 0.0)
+            app.firstRecordedSeconds = now;
+        app.lastUpdatedSeconds = now;
+    }
+
     void MergeInputAppTotalsByName(InputStats& input)
     {
         std::vector<AppInputStats> merged;
@@ -608,6 +621,9 @@ namespace
                 it->total += app.total;
                 it->downTotal += app.downTotal;
                 it->upTotal += app.upTotal;
+                if (it->firstRecordedSeconds <= 0.0 || (app.firstRecordedSeconds > 0.0 && app.firstRecordedSeconds < it->firstRecordedSeconds))
+                    it->firstRecordedSeconds = app.firstRecordedSeconds;
+                it->lastUpdatedSeconds = std::max(it->lastUpdatedSeconds, app.lastUpdatedSeconds);
                 if (it->processId == 0)
                     it->processId = app.processId;
             }
@@ -626,6 +642,13 @@ namespace
 
         g_programActivity.push_back({ focus.appName, focus.processId });
         return g_programActivity.back();
+    }
+
+    void TouchProgramActivity(ProgramActivityStats& activity, double now)
+    {
+        if (activity.firstRecordedSeconds <= 0.0)
+            activity.firstRecordedSeconds = now;
+        activity.lastUpdatedSeconds = now;
     }
 
     const ProgramActivityStats* FindProgramActivity(const std::string& appName, DWORD processId)
@@ -657,6 +680,9 @@ namespace
             {
                 it->activeSeconds += activity.activeSeconds;
                 it->lastInputSeconds = std::max(it->lastInputSeconds, activity.lastInputSeconds);
+                if (it->firstRecordedSeconds <= 0.0 || (activity.firstRecordedSeconds > 0.0 && activity.firstRecordedSeconds < it->firstRecordedSeconds))
+                    it->firstRecordedSeconds = activity.firstRecordedSeconds;
+                it->lastUpdatedSeconds = std::max(it->lastUpdatedSeconds, activity.lastUpdatedSeconds);
                 if (it->processId == 0)
                     it->processId = activity.processId;
             }
@@ -696,6 +722,46 @@ namespace
         monitor.programHeatmaps = std::move(merged);
     }
 
+    void EnsureInputTimestamps(InputStats& input)
+    {
+        double firstEventSeconds = input.lastTimeSeconds;
+        double lastEventSeconds = input.lastTimeSeconds;
+        for (const InputEvent& event : input.events)
+        {
+            if (event.timeSeconds <= 0.0)
+                continue;
+
+            if (firstEventSeconds <= 0.0 || event.timeSeconds < firstEventSeconds)
+                firstEventSeconds = event.timeSeconds;
+            lastEventSeconds = std::max(lastEventSeconds, event.timeSeconds);
+        }
+
+        if (input.firstRecordedSeconds < 0.0 || !std::isfinite(input.firstRecordedSeconds))
+            input.firstRecordedSeconds = firstEventSeconds;
+        if (input.lastUpdatedSeconds < 0.0 || !std::isfinite(input.lastUpdatedSeconds))
+            input.lastUpdatedSeconds = lastEventSeconds;
+
+        for (AppInputStats& app : input.appTotals)
+        {
+            double appFirstSeconds = 0.0;
+            double appLastSeconds = 0.0;
+            for (const InputEvent& event : input.events)
+            {
+                if (event.appName != app.appName || event.timeSeconds <= 0.0)
+                    continue;
+
+                if (appFirstSeconds <= 0.0 || event.timeSeconds < appFirstSeconds)
+                    appFirstSeconds = event.timeSeconds;
+                appLastSeconds = std::max(appLastSeconds, event.timeSeconds);
+            }
+
+            if (app.firstRecordedSeconds < 0.0 || !std::isfinite(app.firstRecordedSeconds))
+                app.firstRecordedSeconds = appFirstSeconds > 0.0 ? appFirstSeconds : input.firstRecordedSeconds;
+            if (app.lastUpdatedSeconds < 0.0 || !std::isfinite(app.lastUpdatedSeconds))
+                app.lastUpdatedSeconds = appLastSeconds > 0.0 ? appLastSeconds : input.lastUpdatedSeconds;
+        }
+    }
+
     double ActiveDeltaSeconds(double previousSeconds, double currentSeconds)
     {
         if (previousSeconds < 0.0 || currentSeconds <= previousSeconds)
@@ -712,6 +778,7 @@ namespace
         ProgramActivityStats& activity = GetProgramActivity(focus);
         activity.activeSeconds += ActiveDeltaSeconds(activity.lastInputSeconds, now);
         activity.lastInputSeconds = now;
+        TouchProgramActivity(activity, now);
     }
 
     void AddInputEvent(const std::string& id, const std::string& device, const std::string& label, std::string action, std::string detail)
@@ -722,10 +789,14 @@ namespace
         RecordInputActivity(focus, now);
 
         ++input.total;
+        if (input.firstRecordedSeconds <= 0.0)
+            input.firstRecordedSeconds = now;
+        input.lastUpdatedSeconds = now;
         input.lastTimeSeconds = now;
         input.lastAppName = focus.appName;
 
         AppInputStats& appStats = GetAppStats(input, focus);
+        TouchAppStats(appStats, now);
         ++appStats.total;
 
         if (action == "Down")
@@ -883,7 +954,7 @@ namespace
             return false;
         }
 
-        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '9', '\0' };
+        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', '1', '0' };
         out.write(magic, sizeof(magic));
 
         if (g_saveStartUnixSeconds <= 0.0 || !std::isfinite(g_saveStartUnixSeconds))
@@ -905,6 +976,8 @@ namespace
             WriteValue(out, activity.activeSeconds);
             const double savedProgramLastInputSeconds = -1.0;
             WriteValue(out, savedProgramLastInputSeconds);
+            WriteValue(out, activity.firstRecordedSeconds);
+            WriteValue(out, activity.lastUpdatedSeconds);
         }
 
         const uint32_t manualKeyNameCount = static_cast<uint32_t>(g_manualKeyNames.size());
@@ -950,6 +1023,8 @@ namespace
             WriteValue(out, input.total);
             WriteValue(out, input.downTotal);
             WriteValue(out, input.upTotal);
+            WriteValue(out, input.firstRecordedSeconds);
+            WriteValue(out, input.lastUpdatedSeconds);
             WriteValue(out, input.lastTimeSeconds);
             WriteString(out, input.lastAppName);
 
@@ -962,6 +1037,8 @@ namespace
                 WriteValue(out, app.total);
                 WriteValue(out, app.downTotal);
                 WriteValue(out, app.upTotal);
+                WriteValue(out, app.firstRecordedSeconds);
+                WriteValue(out, app.lastUpdatedSeconds);
             }
         }
 
@@ -1023,6 +1100,7 @@ namespace
         const char expectedV7[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '7', '\0' };
         const char expectedV8[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '8', '\0' };
         const char expectedV9[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '9', '\0' };
+        const char expectedV10[8] = { 'K', 'N', 'A', 'L', 'Y', '1', '0' };
         const bool isV1 = memcmp(magic, expectedV1, sizeof(expectedV1)) == 0;
         const bool isV2 = memcmp(magic, expectedV2, sizeof(expectedV2)) == 0;
         const bool isV3 = memcmp(magic, expectedV3, sizeof(expectedV3)) == 0;
@@ -1032,7 +1110,8 @@ namespace
         const bool isV7 = memcmp(magic, expectedV7, sizeof(expectedV7)) == 0;
         const bool isV8 = memcmp(magic, expectedV8, sizeof(expectedV8)) == 0;
         const bool isV9 = memcmp(magic, expectedV9, sizeof(expectedV9)) == 0;
-        if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5 && !isV6 && !isV7 && !isV8 && !isV9)
+        const bool isV10 = memcmp(magic, expectedV10, sizeof(expectedV10)) == 0;
+        if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5 && !isV6 && !isV7 && !isV8 && !isV9 && !isV10)
         {
             g_saveLoadStatus = "Load failed: invalid file format.";
             return false;
@@ -1057,7 +1136,7 @@ namespace
         double loadedLastInputSeconds = -1.0;
         double loadedSaveStartUnixSeconds = 0.0;
 
-        if (isV4 || isV5 || isV6 || isV7 || isV8 || isV9)
+        if (isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10)
         {
             if (!ReadValue(in, loadedRuntimeSeconds))
             {
@@ -1066,13 +1145,13 @@ namespace
             }
         }
 
-        if ((isV7 || isV8 || isV9) && !ReadValue(in, loadedSaveStartUnixSeconds))
+        if ((isV7 || isV8 || isV9 || isV10) && !ReadValue(in, loadedSaveStartUnixSeconds))
         {
             g_saveLoadStatus = "Load failed: invalid save start data.";
             return false;
         }
 
-        if (isV5 || isV6 || isV7 || isV8 || isV9)
+        if (isV5 || isV6 || isV7 || isV8 || isV9 || isV10)
         {
             if (!ReadValue(in, loadedGlobalActiveSeconds) ||
                 !ReadValue(in, loadedLastInputSeconds))
@@ -1101,17 +1180,31 @@ namespace
                     return false;
                 }
 
+                if (isV10)
+                {
+                    if (!ReadValue(in, activity.firstRecordedSeconds) ||
+                        !ReadValue(in, activity.lastUpdatedSeconds))
+                    {
+                        g_saveLoadStatus = "Load failed: invalid program activity timestamp data.";
+                        return false;
+                    }
+                }
+
                 if (!std::isfinite(activity.activeSeconds) || activity.activeSeconds < 0.0)
                     activity.activeSeconds = 0.0;
                 if (!std::isfinite(activity.lastInputSeconds))
                     activity.lastInputSeconds = -1.0;
+                if (!isV10 || !std::isfinite(activity.firstRecordedSeconds) || activity.firstRecordedSeconds < 0.0)
+                    activity.firstRecordedSeconds = activity.lastInputSeconds > 0.0 ? activity.lastInputSeconds : 0.0;
+                if (!isV10 || !std::isfinite(activity.lastUpdatedSeconds) || activity.lastUpdatedSeconds < 0.0)
+                    activity.lastUpdatedSeconds = activity.lastInputSeconds > 0.0 ? activity.lastInputSeconds : activity.firstRecordedSeconds;
                 NormalizeProgramName(activity.appName, activity.processId);
 
                 loadedProgramActivity.push_back(std::move(activity));
             }
         }
 
-        if (isV6 || isV7 || isV8 || isV9)
+        if (isV6 || isV7 || isV8 || isV9 || isV10)
         {
             uint32_t manualKeyNameCount = 0;
             if (!ReadValue(in, manualKeyNameCount) || manualKeyNameCount > 4096)
@@ -1140,7 +1233,7 @@ namespace
             }
         }
 
-        if (isV8 || isV9)
+        if (isV8 || isV9 || isV10)
         {
             uint32_t cursorHeatSampleCount = 0;
             if (!ReadValue(in, cursorHeatSampleCount) || cursorHeatSampleCount > 500000)
@@ -1171,7 +1264,7 @@ namespace
             }
         }
 
-        if (isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9)
+        if (isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10)
         {
             if (!ReadValue(in, loadedHeatmapCellScale) ||
                 !ReadValue(in, loadedCursorHeatRadiusPixels))
@@ -1192,7 +1285,7 @@ namespace
             return false;
         }
 
-        if (isV9)
+        if (isV9 || isV10)
         {
             if (!ReadValue(in, loadedMouse4Clicks) ||
                 !ReadValue(in, loadedMouse5Clicks))
@@ -1218,13 +1311,33 @@ namespace
                 !ReadString(in, input.label) ||
                 !ReadValue(in, input.total) ||
                 !ReadValue(in, input.downTotal) ||
-                !ReadValue(in, input.upTotal) ||
-                !ReadValue(in, input.lastTimeSeconds) ||
+                !ReadValue(in, input.upTotal))
+            {
+                g_saveLoadStatus = "Load failed: invalid input data.";
+                return false;
+            }
+
+            if (isV10)
+            {
+                if (!ReadValue(in, input.firstRecordedSeconds) ||
+                    !ReadValue(in, input.lastUpdatedSeconds))
+                {
+                    g_saveLoadStatus = "Load failed: invalid input timestamp data.";
+                    return false;
+                }
+            }
+
+            if (!ReadValue(in, input.lastTimeSeconds) ||
                 !ReadString(in, input.lastAppName))
             {
                 g_saveLoadStatus = "Load failed: invalid input data.";
                 return false;
             }
+
+            if (!isV10 || !std::isfinite(input.firstRecordedSeconds) || input.firstRecordedSeconds < 0.0)
+                input.firstRecordedSeconds = input.lastTimeSeconds;
+            if (!isV10 || !std::isfinite(input.lastUpdatedSeconds) || input.lastUpdatedSeconds < 0.0)
+                input.lastUpdatedSeconds = input.lastTimeSeconds;
 
             uint32_t appCount = 0;
             if (!ReadValue(in, appCount) || appCount > 100000)
@@ -1247,6 +1360,20 @@ namespace
                     return false;
                 }
 
+                if (isV10)
+                {
+                    if (!ReadValue(in, app.firstRecordedSeconds) ||
+                        !ReadValue(in, app.lastUpdatedSeconds))
+                    {
+                        g_saveLoadStatus = "Load failed: invalid app timestamp data.";
+                        return false;
+                    }
+                }
+
+                if (!isV10 || !std::isfinite(app.firstRecordedSeconds) || app.firstRecordedSeconds < 0.0)
+                    app.firstRecordedSeconds = input.firstRecordedSeconds;
+                if (!isV10 || !std::isfinite(app.lastUpdatedSeconds) || app.lastUpdatedSeconds < 0.0)
+                    app.lastUpdatedSeconds = input.lastUpdatedSeconds;
                 NormalizeProgramName(app.appName, app.processId);
                 input.appTotals.push_back(std::move(app));
             }
@@ -1255,17 +1382,18 @@ namespace
             for (InputEvent& event : input.events)
                 NormalizeProgramName(event.appName, event.processId);
             MergeInputAppTotalsByName(input);
+            EnsureInputTimestamps(input);
 
             loadedInputs.push_back(std::move(input));
         }
 
-        if (!isV4 && !isV5 && !isV6 && !isV7 && !isV8 && !isV9)
+        if (!isV4 && !isV5 && !isV6 && !isV7 && !isV8 && !isV9 && !isV10)
         {
             for (const InputStats& input : loadedInputs)
                 loadedRuntimeSeconds = std::max(loadedRuntimeSeconds, input.lastTimeSeconds);
         }
 
-        if (!isV5 && !isV6 && !isV7 && !isV8 && !isV9)
+        if (!isV5 && !isV6 && !isV7 && !isV8 && !isV9 && !isV10)
         {
             loadedGlobalActiveSeconds = loadedRuntimeSeconds;
             for (const InputStats& input : loadedInputs)
@@ -1302,7 +1430,7 @@ namespace
                 return false;
             }
 
-            if (isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9)
+            if (isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10)
             {
                 if (!ReadValue(in, monitor.columns) ||
                     !ReadValue(in, monitor.rows) ||
@@ -1337,7 +1465,7 @@ namespace
                 return false;
             }
 
-            if (isV2 || isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9)
+            if (isV2 || isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10)
             {
                 uint32_t programHeatmapCount = 0;
                 if (!ReadValue(in, programHeatmapCount) || programHeatmapCount > 100000)
@@ -1381,7 +1509,7 @@ namespace
         g_programActivity = std::move(loadedProgramActivity);
         g_manualKeyNames = std::move(loadedManualKeyNames);
         g_cursorHeatSamples = std::move(loadedCursorHeatSamples);
-        if (isV8 || isV9)
+        if (isV8 || isV9 || isV10)
             RebuildHeatmapsFromSamples();
         g_mouseDelta = loadedMouseDelta;
         g_wheelDelta = loadedWheelDelta;
@@ -2188,6 +2316,14 @@ namespace
         return buffer;
     }
 
+    std::string FormatFileTimestamp(double fileSeconds)
+    {
+        if (fileSeconds <= 0.0 || !std::isfinite(fileSeconds) || g_saveStartUnixSeconds <= 0.0)
+            return "Unknown";
+
+        return FormatLocalTimestamp(g_saveStartUnixSeconds + fileSeconds);
+    }
+
     void DrawGlobalSummary()
     {
         ImGui::SeparatorText("Global Summary");
@@ -2499,7 +2635,7 @@ namespace
             ImGuiTableFlags_Sortable |
             ImGuiTableFlags_SortMulti;
 
-        if (ImGui::BeginTable(tableId, 9, tableFlags, ImVec2(0, height)))
+        if (ImGui::BeginTable(tableId, 11, tableFlags, ImVec2(0, height)))
         {
             ImGui::TableSetupColumn("Device");
             ImGui::TableSetupColumn("Input");
@@ -2509,6 +2645,8 @@ namespace
             ImGui::TableSetupColumn("Avg/min");
             ImGui::TableSetupColumn("State");
             ImGui::TableSetupColumn("Last App");
+            ImGui::TableSetupColumn("First");
+            ImGui::TableSetupColumn("Updated");
             ImGui::TableSetupColumn("Last");
             ImGui::TableHeadersRow();
 
@@ -2533,7 +2671,9 @@ namespace
                 case 5: return RateCountForInput(*a) < RateCountForInput(*b);
                 case 6: return a->isDown < b->isDown;
                 case 7: return a->lastAppName < b->lastAppName;
-                case 8: return a->lastTimeSeconds < b->lastTimeSeconds;
+                case 8: return a->firstRecordedSeconds < b->firstRecordedSeconds;
+                case 9: return a->lastUpdatedSeconds < b->lastUpdatedSeconds;
+                case 10: return a->lastTimeSeconds < b->lastTimeSeconds;
                 default: return a->total < b->total;
                 }
             });
@@ -2562,7 +2702,11 @@ namespace
                 ImGui::TableSetColumnIndex(7);
                 ImGui::TextUnformatted(input.lastAppName.c_str());
                 ImGui::TableSetColumnIndex(8);
-                ImGui::Text("%.3f", input.lastTimeSeconds);
+                ImGui::TextUnformatted(FormatFileTimestamp(input.firstRecordedSeconds).c_str());
+                ImGui::TableSetColumnIndex(9);
+                ImGui::TextUnformatted(FormatFileTimestamp(input.lastUpdatedSeconds).c_str());
+                ImGui::TableSetColumnIndex(10);
+                ImGui::TextUnformatted(FormatFileTimestamp(input.lastTimeSeconds).c_str());
             }
             ImGui::EndTable();
         }
@@ -2643,7 +2787,9 @@ namespace
         ImGui::Text("Avg/min: %.2f", PerMinute(RateCountForInput(*selectedInput)));
         ImGui::Text("State: %s", selectedInput->isDown ? "Down" : "-");
         ImGui::Text("Last app: %s", selectedInput->lastAppName.c_str());
-        ImGui::Text("Last time: %.3f", selectedInput->lastTimeSeconds);
+        ImGui::Text("First recorded: %s", FormatFileTimestamp(selectedInput->firstRecordedSeconds).c_str());
+        ImGui::Text("Last updated: %s", FormatFileTimestamp(selectedInput->lastUpdatedSeconds).c_str());
+        ImGui::Text("Last event: %s", FormatFileTimestamp(selectedInput->lastTimeSeconds).c_str());
     }
 
     uint64_t TotalKeyboardDiagramInputs()
@@ -2928,7 +3074,7 @@ namespace
             ImGuiTableFlags_ScrollY |
             ImGuiTableFlags_Sortable;
 
-        if (ImGui::BeginTable("selected-app-totals", 6, tableFlags, ImVec2(0, appTableHeight)))
+        if (ImGui::BeginTable("selected-app-totals", 8, tableFlags, ImVec2(0, appTableHeight)))
         {
             ImGui::TableSetupColumn("Program");
             ImGui::TableSetupColumn("PID");
@@ -2936,6 +3082,8 @@ namespace
             ImGui::TableSetupColumn("Down");
             ImGui::TableSetupColumn("Up");
             ImGui::TableSetupColumn("Avg/min");
+            ImGui::TableSetupColumn("First");
+            ImGui::TableSetupColumn("Updated");
             ImGui::TableHeadersRow();
 
             std::vector<const AppInputStats*> rows;
@@ -2955,6 +3103,8 @@ namespace
                 case 4: return a->upTotal < b->upTotal;
                 case 5: return PerMinuteForProgram(RateCountForAppInput(*selectedInput, *a), a->appName, a->processId) <
                     PerMinuteForProgram(RateCountForAppInput(*selectedInput, *b), b->appName, b->processId);
+                case 6: return a->firstRecordedSeconds < b->firstRecordedSeconds;
+                case 7: return a->lastUpdatedSeconds < b->lastUpdatedSeconds;
                 default: return a->total < b->total;
                 }
             });
@@ -2975,6 +3125,10 @@ namespace
                 ImGui::Text("%llu", static_cast<unsigned long long>(app.upTotal));
                 ImGui::TableSetColumnIndex(5);
                 ImGui::Text("%.2f", PerMinuteForProgram(RateCountForAppInput(*selectedInput, app), app.appName, app.processId));
+                ImGui::TableSetColumnIndex(6);
+                ImGui::TextUnformatted(FormatFileTimestamp(app.firstRecordedSeconds).c_str());
+                ImGui::TableSetColumnIndex(7);
+                ImGui::TextUnformatted(FormatFileTimestamp(app.lastUpdatedSeconds).c_str());
             }
             ImGui::EndTable();
         }
@@ -3241,6 +3395,8 @@ namespace
         uint64_t comboRateCount = 0;
         uint64_t clickRateCount = 0;
         double activeSeconds = 0.0;
+        double firstRecordedSeconds = 0.0;
+        double lastUpdatedSeconds = 0.0;
     };
 
     void DrawProgramTab()
@@ -3307,7 +3463,14 @@ namespace
         }
 
         for (ProgramTotals& program : programs)
+        {
             program.activeSeconds = ProgramActiveSeconds(program.appName, program.processId);
+            if (const ProgramActivityStats* activity = FindProgramActivity(program.appName, program.processId))
+            {
+                program.firstRecordedSeconds = activity->firstRecordedSeconds;
+                program.lastUpdatedSeconds = activity->lastUpdatedSeconds;
+            }
+        }
 
         constexpr ImGuiTableFlags tableFlags =
             ImGuiTableFlags_Borders |
@@ -3321,7 +3484,7 @@ namespace
             ImGui::Text("Focused programs tracked: %d", static_cast<int>(programs.size()));
             ImGui::Separator();
 
-            if (ImGui::BeginTable("program-summary", 10, tableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y)))
+            if (ImGui::BeginTable("program-summary", 12, tableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y)))
             {
                 ImGui::TableSetupColumn("Program");
                 ImGui::TableSetupColumn("PID");
@@ -3333,6 +3496,8 @@ namespace
                 ImGui::TableSetupColumn("Click/min");
                 ImGui::TableSetupColumn("Focused");
                 ImGui::TableSetupColumn("Focus/24h");
+                ImGui::TableSetupColumn("First");
+                ImGui::TableSetupColumn("Updated");
                 ImGui::TableHeadersRow();
 
                 const ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs();
@@ -3354,6 +3519,8 @@ namespace
                     PerMinuteForProgram(b.clickRateCount, b.appName, b.processId);
                 case 8: return a.activeSeconds < b.activeSeconds;
                 case 9: return Per24Hours(a.activeSeconds) < Per24Hours(b.activeSeconds);
+                case 10: return a.firstRecordedSeconds < b.firstRecordedSeconds;
+                case 11: return a.lastUpdatedSeconds < b.lastUpdatedSeconds;
                 default: return a.total < b.total;
                 }
             });
@@ -3387,6 +3554,10 @@ namespace
                     ImGui::TextUnformatted(FormatDuration(program.activeSeconds).c_str());
                     ImGui::TableSetColumnIndex(9);
                     ImGui::TextUnformatted(FormatDuration(Per24Hours(program.activeSeconds)).c_str());
+                    ImGui::TableSetColumnIndex(10);
+                    ImGui::TextUnformatted(FormatFileTimestamp(program.firstRecordedSeconds).c_str());
+                    ImGui::TableSetColumnIndex(11);
+                    ImGui::TextUnformatted(FormatFileTimestamp(program.lastUpdatedSeconds).c_str());
                 }
 
                 ImGui::EndTable();
@@ -3408,6 +3579,12 @@ namespace
             ImGui::Text("Focused: %s | Focus/24h: %s",
                 FormatDuration(selectedProgramActiveSeconds).c_str(),
                 FormatDuration(Per24Hours(selectedProgramActiveSeconds)).c_str());
+            if (const ProgramActivityStats* activity = FindProgramActivity(g_selectedProgramName, g_selectedProgramPid))
+            {
+                ImGui::Text("First recorded: %s | Last updated: %s",
+                    FormatFileTimestamp(activity->firstRecordedSeconds).c_str(),
+                    FormatFileTimestamp(activity->lastUpdatedSeconds).c_str());
+            }
             ImGui::Separator();
             if (ImGui::BeginTable("program-inputs", 6, tableFlags, ImVec2(0, ImGui::GetContentRegionAvail().y)))
             {
