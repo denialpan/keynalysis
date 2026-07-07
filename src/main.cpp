@@ -922,6 +922,30 @@ namespace
         return path + ".bak";
     }
 
+    bool SnapshotHasCompletionFooter(const std::string& path)
+    {
+        std::ifstream in(path, std::ios::binary | std::ios::ate);
+        if (!in)
+            return false;
+
+        const std::streamoff fileSize = in.tellg();
+        if (fileSize < 16)
+            return false;
+
+        char magic[8]{};
+        in.seekg(0, std::ios::beg);
+        in.read(magic, sizeof(magic));
+        const char expectedV11[8] = { 'K', 'N', 'A', 'L', 'Y', '1', '1', '\0' };
+        if (memcmp(magic, expectedV11, sizeof(expectedV11)) != 0)
+            return true;
+
+        char footer[8]{};
+        in.seekg(fileSize - static_cast<std::streamoff>(sizeof(footer)), std::ios::beg);
+        in.read(footer, sizeof(footer));
+        const char expectedFooter[8] = { 'K', 'N', 'E', 'N', 'D', '1', '1', '\0' };
+        return in.good() && memcmp(footer, expectedFooter, sizeof(expectedFooter)) == 0;
+    }
+
     void DisableDefaultDockRebuilds()
     {
         g_rebuildHomeDockLayout = false;
@@ -992,7 +1016,7 @@ namespace
             return false;
         }
 
-        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', '1', '0' };
+        const char magic[8] = { 'K', 'N', 'A', 'L', 'Y', '1', '1', '\0' };
         out.write(magic, sizeof(magic));
 
         if (g_saveStartUnixSeconds <= 0.0 || !std::isfinite(g_saveStartUnixSeconds))
@@ -1105,6 +1129,9 @@ namespace
             }
         }
 
+        const char footer[8] = { 'K', 'N', 'E', 'N', 'D', '1', '1', '\0' };
+        out.write(footer, sizeof(footer));
+
         if (!out.good())
         {
             out.close();
@@ -1123,7 +1150,14 @@ namespace
         }
         out.close();
 
-        if (FileExists(path))
+        if (!SnapshotHasCompletionFooter(tempPath))
+        {
+            DeleteFileA(tempPath.c_str());
+            g_saveLoadStatus = "Save failed: incomplete temp file.";
+            return false;
+        }
+
+        if (FileExists(path) && SnapshotHasCompletionFooter(path))
             CopyFileA(path.c_str(), backupPath.c_str(), FALSE);
 
         if (!MoveFileExA(tempPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
@@ -1161,6 +1195,7 @@ namespace
         const char expectedV8[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '8', '\0' };
         const char expectedV9[8] = { 'K', 'N', 'A', 'L', 'Y', 'S', '9', '\0' };
         const char expectedV10[8] = { 'K', 'N', 'A', 'L', 'Y', '1', '0' };
+        const char expectedV11[8] = { 'K', 'N', 'A', 'L', 'Y', '1', '1', '\0' };
         const bool isV1 = memcmp(magic, expectedV1, sizeof(expectedV1)) == 0;
         const bool isV2 = memcmp(magic, expectedV2, sizeof(expectedV2)) == 0;
         const bool isV3 = memcmp(magic, expectedV3, sizeof(expectedV3)) == 0;
@@ -1171,7 +1206,8 @@ namespace
         const bool isV8 = memcmp(magic, expectedV8, sizeof(expectedV8)) == 0;
         const bool isV9 = memcmp(magic, expectedV9, sizeof(expectedV9)) == 0;
         const bool isV10 = memcmp(magic, expectedV10, sizeof(expectedV10)) == 0;
-        if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5 && !isV6 && !isV7 && !isV8 && !isV9 && !isV10)
+        const bool isV11 = memcmp(magic, expectedV11, sizeof(expectedV11)) == 0;
+        if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5 && !isV6 && !isV7 && !isV8 && !isV9 && !isV10 && !isV11)
         {
             g_saveLoadStatus = "Load failed: invalid file format.";
             return false;
@@ -1196,7 +1232,7 @@ namespace
         double loadedLastInputSeconds = -1.0;
         double loadedSaveStartUnixSeconds = 0.0;
 
-        if (isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10)
+        if (isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11)
         {
             if (!ReadValue(in, loadedRuntimeSeconds))
             {
@@ -1205,13 +1241,13 @@ namespace
             }
         }
 
-        if ((isV7 || isV8 || isV9 || isV10) && !ReadValue(in, loadedSaveStartUnixSeconds))
+        if ((isV7 || isV8 || isV9 || isV10 || isV11) && !ReadValue(in, loadedSaveStartUnixSeconds))
         {
             g_saveLoadStatus = "Load failed: invalid save start data.";
             return false;
         }
 
-        if (isV5 || isV6 || isV7 || isV8 || isV9 || isV10)
+        if (isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11)
         {
             if (!ReadValue(in, loadedGlobalActiveSeconds) ||
                 !ReadValue(in, loadedLastInputSeconds))
@@ -1240,7 +1276,7 @@ namespace
                     return false;
                 }
 
-                if (isV10)
+                if (isV10 || isV11)
                 {
                     if (!ReadValue(in, activity.firstRecordedSeconds) ||
                         !ReadValue(in, activity.lastUpdatedSeconds))
@@ -1254,9 +1290,9 @@ namespace
                     activity.activeSeconds = 0.0;
                 if (!std::isfinite(activity.lastInputSeconds))
                     activity.lastInputSeconds = -1.0;
-                if (!isV10 || !std::isfinite(activity.firstRecordedSeconds) || activity.firstRecordedSeconds < 0.0)
+                if ((!isV10 && !isV11) || !std::isfinite(activity.firstRecordedSeconds) || activity.firstRecordedSeconds < 0.0)
                     activity.firstRecordedSeconds = activity.lastInputSeconds > 0.0 ? activity.lastInputSeconds : 0.0;
-                if (!isV10 || !std::isfinite(activity.lastUpdatedSeconds) || activity.lastUpdatedSeconds < 0.0)
+                if ((!isV10 && !isV11) || !std::isfinite(activity.lastUpdatedSeconds) || activity.lastUpdatedSeconds < 0.0)
                     activity.lastUpdatedSeconds = activity.lastInputSeconds > 0.0 ? activity.lastInputSeconds : activity.firstRecordedSeconds;
                 NormalizeProgramName(activity.appName, activity.processId);
 
@@ -1264,7 +1300,7 @@ namespace
             }
         }
 
-        if (isV6 || isV7 || isV8 || isV9 || isV10)
+        if (isV6 || isV7 || isV8 || isV9 || isV10 || isV11)
         {
             uint32_t manualKeyNameCount = 0;
             if (!ReadValue(in, manualKeyNameCount) || manualKeyNameCount > 4096)
@@ -1293,7 +1329,7 @@ namespace
             }
         }
 
-        if (isV8 || isV9 || isV10)
+        if (isV8 || isV9 || isV10 || isV11)
         {
             uint32_t cursorHeatSampleCount = 0;
             if (!ReadValue(in, cursorHeatSampleCount) || cursorHeatSampleCount > 500000)
@@ -1324,7 +1360,7 @@ namespace
             }
         }
 
-        if (isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10)
+        if (isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11)
         {
             if (!ReadValue(in, loadedHeatmapCellScale) ||
                 !ReadValue(in, loadedCursorHeatRadiusPixels))
@@ -1345,7 +1381,7 @@ namespace
             return false;
         }
 
-        if (isV9 || isV10)
+        if (isV9 || isV10 || isV11)
         {
             if (!ReadValue(in, loadedMouse4Clicks) ||
                 !ReadValue(in, loadedMouse5Clicks))
@@ -1377,7 +1413,7 @@ namespace
                 return false;
             }
 
-            if (isV10)
+            if (isV10 || isV11)
             {
                 if (!ReadValue(in, input.firstRecordedSeconds) ||
                     !ReadValue(in, input.lastUpdatedSeconds))
@@ -1394,9 +1430,9 @@ namespace
                 return false;
             }
 
-            if (!isV10 || !std::isfinite(input.firstRecordedSeconds) || input.firstRecordedSeconds < 0.0)
+            if ((!isV10 && !isV11) || !std::isfinite(input.firstRecordedSeconds) || input.firstRecordedSeconds < 0.0)
                 input.firstRecordedSeconds = input.lastTimeSeconds;
-            if (!isV10 || !std::isfinite(input.lastUpdatedSeconds) || input.lastUpdatedSeconds < 0.0)
+            if ((!isV10 && !isV11) || !std::isfinite(input.lastUpdatedSeconds) || input.lastUpdatedSeconds < 0.0)
                 input.lastUpdatedSeconds = input.lastTimeSeconds;
 
             uint32_t appCount = 0;
@@ -1420,7 +1456,7 @@ namespace
                     return false;
                 }
 
-                if (isV10)
+                if (isV10 || isV11)
                 {
                     if (!ReadValue(in, app.firstRecordedSeconds) ||
                         !ReadValue(in, app.lastUpdatedSeconds))
@@ -1430,9 +1466,9 @@ namespace
                     }
                 }
 
-                if (!isV10 || !std::isfinite(app.firstRecordedSeconds) || app.firstRecordedSeconds < 0.0)
+                if ((!isV10 && !isV11) || !std::isfinite(app.firstRecordedSeconds) || app.firstRecordedSeconds < 0.0)
                     app.firstRecordedSeconds = input.firstRecordedSeconds;
-                if (!isV10 || !std::isfinite(app.lastUpdatedSeconds) || app.lastUpdatedSeconds < 0.0)
+                if ((!isV10 && !isV11) || !std::isfinite(app.lastUpdatedSeconds) || app.lastUpdatedSeconds < 0.0)
                     app.lastUpdatedSeconds = input.lastUpdatedSeconds;
                 NormalizeProgramName(app.appName, app.processId);
                 input.appTotals.push_back(std::move(app));
@@ -1447,13 +1483,13 @@ namespace
             loadedInputs.push_back(std::move(input));
         }
 
-        if (!isV4 && !isV5 && !isV6 && !isV7 && !isV8 && !isV9 && !isV10)
+        if (!isV4 && !isV5 && !isV6 && !isV7 && !isV8 && !isV9 && !isV10 && !isV11)
         {
             for (const InputStats& input : loadedInputs)
                 loadedRuntimeSeconds = std::max(loadedRuntimeSeconds, input.lastTimeSeconds);
         }
 
-        if (!isV5 && !isV6 && !isV7 && !isV8 && !isV9 && !isV10)
+        if (!isV5 && !isV6 && !isV7 && !isV8 && !isV9 && !isV10 && !isV11)
         {
             loadedGlobalActiveSeconds = loadedRuntimeSeconds;
             for (const InputStats& input : loadedInputs)
@@ -1490,7 +1526,7 @@ namespace
                 return false;
             }
 
-            if (isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10)
+            if (isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11)
             {
                 if (!ReadValue(in, monitor.columns) ||
                     !ReadValue(in, monitor.rows) ||
@@ -1546,7 +1582,7 @@ namespace
                 monitor.bins.assign(static_cast<size_t>(monitor.columns * monitor.rows), 0);
             }
 
-            if (isV2 || isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10)
+            if (isV2 || isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11)
             {
                 uint32_t programHeatmapCount = 0;
                 if (!ReadValue(in, programHeatmapCount) || programHeatmapCount > 100000)
@@ -1599,13 +1635,25 @@ namespace
             loadedMonitors.push_back(std::move(monitor));
         }
 
+        if (isV11)
+        {
+            char footer[8]{};
+            in.read(footer, sizeof(footer));
+            const char expectedFooter[8] = { 'K', 'N', 'E', 'N', 'D', '1', '1', '\0' };
+            if (!in.good() || memcmp(footer, expectedFooter, sizeof(expectedFooter)) != 0)
+            {
+                g_saveLoadStatus = "Load failed: missing save completion marker.";
+                return false;
+            }
+        }
+
         MergeProgramActivityByName(loadedProgramActivity);
         g_inputs = std::move(loadedInputs);
         g_monitors = std::move(loadedMonitors);
         g_programActivity = std::move(loadedProgramActivity);
         g_manualKeyNames = std::move(loadedManualKeyNames);
         g_cursorHeatSamples = std::move(loadedCursorHeatSamples);
-        if (isV8 || isV9 || isV10)
+        if (isV8 || isV9 || isV10 || isV11)
             RebuildHeatmapsFromSamples();
         g_mouseDelta = loadedMouseDelta;
         g_wheelDelta = loadedWheelDelta;
