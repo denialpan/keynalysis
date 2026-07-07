@@ -912,6 +912,16 @@ namespace
         return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
     }
 
+    std::string SnapshotTempPath(const std::string& path)
+    {
+        return path + ".tmp";
+    }
+
+    std::string SnapshotBackupPath(const std::string& path)
+    {
+        return path + ".bak";
+    }
+
     void DisableDefaultDockRebuilds()
     {
         g_rebuildHomeDockLayout = false;
@@ -972,7 +982,10 @@ namespace
 
     bool SaveSnapshotToFile(const std::string& path)
     {
-        std::ofstream out(path, std::ios::binary);
+        const std::string tempPath = SnapshotTempPath(path);
+        const std::string backupPath = SnapshotBackupPath(path);
+
+        std::ofstream out(tempPath, std::ios::binary);
         if (!out)
         {
             g_saveLoadStatus = "Save failed: unable to open file.";
@@ -1094,7 +1107,29 @@ namespace
 
         if (!out.good())
         {
+            out.close();
+            DeleteFileA(tempPath.c_str());
             g_saveLoadStatus = "Save failed: write error.";
+            return false;
+        }
+
+        out.flush();
+        if (!out.good())
+        {
+            out.close();
+            DeleteFileA(tempPath.c_str());
+            g_saveLoadStatus = "Save failed: flush error.";
+            return false;
+        }
+        out.close();
+
+        if (FileExists(path))
+            CopyFileA(path.c_str(), backupPath.c_str(), FALSE);
+
+        if (!MoveFileExA(tempPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        {
+            DeleteFileA(tempPath.c_str());
+            g_saveLoadStatus = "Save failed: unable to replace file.";
             return false;
         }
 
@@ -1600,6 +1635,33 @@ namespace
         g_dataFilePath = path;
         g_lastAutoSaveTime = std::chrono::steady_clock::now();
         g_saveLoadStatus = "Loaded: " + path;
+        SaveAppSettings();
+        return true;
+    }
+
+    bool LoadSnapshotWithBackup(const std::string& path)
+    {
+        if (LoadSnapshotFromFile(path))
+            return true;
+
+        const std::string primaryError = g_saveLoadStatus;
+        const std::string backupPath = SnapshotBackupPath(path);
+        if (!FileExists(backupPath))
+        {
+            g_saveLoadStatus = primaryError;
+            return false;
+        }
+
+        if (!LoadSnapshotFromFile(backupPath))
+        {
+            g_saveLoadStatus = primaryError + " Backup also failed.";
+            return false;
+        }
+
+        CopyFileA(backupPath.c_str(), path.c_str(), FALSE);
+        g_dataFilePath = path;
+        g_lastAutoSaveTime = std::chrono::steady_clock::now();
+        g_saveLoadStatus = "Loaded backup after primary save failed: " + backupPath;
         SaveAppSettings();
         return true;
     }
@@ -2523,7 +2585,7 @@ namespace
                 {
                     const std::string path = ShowSnapshotFileDialog(false);
                     if (!path.empty())
-                        LoadSnapshotFromFile(path);
+                        LoadSnapshotWithBackup(path);
                 }
                 ImGui::Separator();
                 const bool previousAutoSave = g_autoSaveEnabled;
@@ -3877,7 +3939,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 
     if (FileExists(g_dataFilePath))
     {
-        LoadSnapshotFromFile(g_dataFilePath);
+        LoadSnapshotWithBackup(g_dataFilePath);
     }
     else
     {

@@ -1,0 +1,46 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "mingw-debug",
+      "displayName": "MinGW Ninja Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/mingw-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "D:/Program Files/MSYS2/ucrt64/bin/g++.exe",
+        "CMAKE_RC_COMPILER": "D:/Program Files/MSYS2/ucrt64/bin/windres.exe",
+        "FETCHCONTENT_SOURCE_DIR_IMGUI_DOCKING": "${sourceDir}/build-mingw/_deps/imgui_docking-src"
+      }
+    },
+    {
+      "name": "mingw-release",
+      "displayName": "MinGW Ninja Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/mingw-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "D:/Program Files/MSYS2/ucrt64/bin/g++.exe",
+        "CMAKE_RC_COMPILER": "D:/Program Files/MSYS2/ucrt64/bin/windres.exe",
+        "FETCHCONTENT_SOURCE_DIR_IMGUI_DOCKING": "${sourceDir}/build-mingw/_deps/imgui_docking-src"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "mingw-debug",
+      "displayName": "Build MinGW Debug",
+      "configurePreset": "mingw-debug"
+    },
+    {
+      "name": "mingw-release",
+      "displayName": "Build MinGW Release",
+      "configurePreset": "mingw-release"
+    }
+  ]
+}
