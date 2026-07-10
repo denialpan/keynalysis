@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 4.2.2)
 
 project(keynalysis LANGUAGES CXX)
 
@@ -20,7 +20,7 @@ set(IMGUI_SOURCES
     ${imgui_docking_SOURCE_DIR}/backends/imgui_impl_win32.cpp
 )
 
-add_executable(keynalysis WIN32
+add_executable(keynalysis
     src/main.cpp
     src/app.rc
     ${IMGUI_SOURCES}
